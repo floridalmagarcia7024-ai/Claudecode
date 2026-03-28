@@ -1,0 +1,225 @@
+================================================================
+POLYMARKET TRADING BOT — FASE 2: INTELIGENCIA Y ESTRATEGIAS
+================================================================
+Prerrequisito: Fase 1 (MVP) completada y funcionando en paper mode.
+Esta fase añade: RSS feeds, detector de régimen, momentum, alertas.
+================================================================
+
+CONTEXTO: La Fase 1 dejó el bot con:
+  - Motor core (TradingEngine) con trailing stop y circuit breaker
+  - Cliente API Polymarket async con rate limiting
+  - DataCollector recolectando datos cada 5 min (necesitas mínimo 7 días de datos)
+  - Estrategia mean reversion con z-score
+  - Groq + VADER para análisis de sentiment
+  - Paper mode funcionando
+  - Estructura: core/, api/, intelligence/, strategies/, data/, tests/
+
+UMBRALES: Usar los mismos del Módulo 0 de Fase 1. NO redefinirlos aquí.
+Si la Fase 1 ajustó algún umbral basado en investigación, respetar esos ajustes.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 9: NEWS FEED PIPELINE (RSS, 100% gratuito)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pip install feedparser aiohttp
+
+RSS FEEDS — SOLO EN INGLÉS (VADER no funciona en español):
+  política:   reuters.com/rssfeed/politicsNews
+              rss.politico.com/politico.xml
+              thehill.com/rss/syndicator/19109
+  crypto:     coindesk.com/arc/outboundfeeds/rss
+              cointelegraph.com/rss
+  general:    feeds.bbci.co.uk/news/world/rss.xml
+              feeds.reuters.com/reuters/topNews
+  deportes:   espn.go.com/espn/rss/news
+
+Clase NewsFeedPipeline:
+  - Loop cada 60s: fetch feeds → deduplicar por hash MD5 del título
+  - Para cada titular nuevo: buscar mercados relevantes por keywords
+  - Matching: al menos 1 keyword del mercado aparece en el título
+  - Si match: calcular VADER score → si shift > SENTIMENT_SHIFT → escalar a Groq
+  - Feeds son configurables (añadir/quitar desde config, no hardcoded en código)
+
+EJEMPLO DE FLUJO END-TO-END:
+  1. RSS devuelve: "Trump leads in latest Iowa poll by 5 points"
+  2. Matching: mercado "Will Trump win Iowa?" tiene keywords ["trump", "iowa"]
+  3. VADER calcula compound score: +0.42
+  4. Score anterior del mercado: +0.10 → shift = 0.32 > 0.25 (umbral)
+  5. Escalar a Groq → responde: {direction: "UP", confidence: 0.72, should_trade: true}
+  6. Señal generada → pasa a TradingEngine para validar liquidez y ejecutar
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 10: DETECTOR DE RÉGIMEN DE MERCADO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+REQUISITO PREVIO: Necesita mínimo 7 días de datos del DataCollector (Fase 1).
+Si no hay suficientes datos, operar en modo RANGING por defecto.
+
+4 REGÍMENES (detectar cada 4h):
+
+  TRENDING_UP:
+    > 60% de cambios horarios positivos en últimas 12h
+    AND slope de regresión lineal > 0.002/h
+    → Activar: MOMENTUM | Desactivar: MEAN_REVERSION
+
+  TRENDING_DOWN:
+    > 60% de cambios horarios negativos AND slope < -0.002/h
+    → Activar: MOMENTUM inverso
+
+  RANGING:
+    Precio oscila ±2% alrededor de media en 12h
+    AND Bollinger Band width < 0.04
+    → Activar: MEAN_REVERSION (principal)
+
+  HIGH_VOLATILITY:
+    ATR(14) > 2x promedio últimos 30 días
+    → Modo observación: reducir size 50%, no abrir nuevas posiciones
+    → Sin excepciones (corregido: la versión anterior tenía una excepción
+      contradictoria con los umbrales de confianza del Módulo 0)
+
+NOTA TÉCNICA: El slope simplificado (closes[-1] - closes[0]) / n NO es slope
+por hora. Usar scipy.stats.linregress o cálculo correcto de pendiente.
+
+Loggear cambio de régimen + enviar alerta cuando cambie.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 11: ESTRATEGIA — MOMENTUM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Solo activa en régimen TRENDING_UP o TRENDING_DOWN.
+
+Señal de entrada:
+  cambio_1h = prob_actual - prob_hace_1h
+  volumen_1h vs volumen_promedio_7d
+  if abs(cambio_1h) >= 0.025 AND volumen_1h > volumen_promedio * 1.5:
+    direction = "BUY" si cambio_1h > 0, "SELL" si no
+
+Confirmación opcional (si IA disponible):
+  Si ai_analysis.direction == direction AND confidence >= AI_CONFIDENCE_MIN:
+    signal_strength += 0.2 (boost en sizing)
+
+Salida: momentum pierde fuerza (cambio_1h < 0.01) OR trailing stop
+
+FILTRO ANTI-RESOLUCIÓN: Si el mercado resuelve en < 48h y la probabilidad
+está convergiendo a 0 o 1, IGNORAR señal de momentum (es convergencia,
+no momentum real). Esto evita señales falsas masivas pre-resolución.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 12: INTELIGENCIA DE MERCADO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SUB-MÓDULO 12A — DETECTOR DE RESOLUCIÓN INMINENTE:
+  < 48h → modo conservador: size *= 0.5
+  < 4h  → NO abrir posiciones nuevas
+  < 0h  → cerrar posición activa inmediatamente
+  Alerta: "{mercado} resuelve en {N}h con posición activa"
+
+SUB-MÓDULO 12B — CORRELACIÓN ENTRE MERCADOS:
+  Si correlación entre dos posiciones > CORRELATION_BLOCK → tratarlas como una
+  Si correlación histórica se rompe > 2σ → log de divergencia
+  Exposición correlacionada máxima: 25% del capital
+
+SUB-MÓDULO 12C — CALENDARIO DE EVENTOS (configurable):
+  Lista de eventos con hora exacta y keywords afectadas
+  Si evento relevante en < 2h: no abrir nuevas posiciones
+  Si evento en < 30min y hay posición en profit: evaluar cierre preventivo
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 13: HEALTH MONITOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+HEARTBEAT (cada 30s): verificar conexión API, loop activo, latencia
+  Si latencia > 5s en 3 checks consecutivos: modo degradado → pausar entradas
+
+RECONEXIÓN INTELIGENTE (tras restart):
+  1. Obtener posiciones reales desde Polymarket
+  2. Comparar con SQLite local
+  3. Si divergencia: posición real = fuente de verdad
+  4. Si drift > 5%: alerta inmediata, no actuar automáticamente
+  5. Restaurar trailing stop states desde SQLite
+
+DEGRADACIÓN EN CADENA (nuevo — no estaba en v5):
+  Si Groq caído: continuar con VADER puro (reducir confidence de señales)
+  Si RSS timeout: continuar con señales de z-score puras (sin sentiment)
+  Si API degradada: modo solo-lectura (monitorear, no ejecutar)
+  Si TODO falla: log crítico + alerta + pausar bot
+  Cada nivel de degradación debe loggearse claramente.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 14: SISTEMA DE ALERTAS (Telegram básico)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pip install python-telegram-bot
+
+4 NIVELES:
+  CRÍTICO (enviar inmediatamente, reintentar 3x):
+    Circuit breaker | Balance < mínimo | API key inválida
+
+  IMPORTANTE (enviar inmediatamente, una vez):
+    Stop loss activado | API degradada > 5min | 3+ pérdidas consecutivas
+
+  INFO (acumular, enviar resumen cada hora):
+    Trade abierto/cerrado | Señal generada | Régimen cambiado
+
+  DEBUG (solo logs, nunca Telegram):
+    Llamadas API, ticks, señales rechazadas
+
+Anti-spam: misma alerta no repetir en < 15 minutos
+
+Comandos básicos: /status /balance /posiciones /help
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NUEVOS ARCHIVOS A CREAR EN FASE 2
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+intelligence/
+├── news_feed.py       # RSS pipeline con feedparser
+├── sentiment.py       # VADER scorer (wrapper limpio)
+├── resolution.py      # Detector de resolución inminente
+├── correlation.py     # Correlación entre mercados
+└── event_calendar.py  # Calendario de eventos
+
+strategies/
+└── momentum.py        # Estrategia momentum
+
+core/
+└── regime.py          # MarketRegimeDetector
+
+monitoring/
+└── health.py          # Heartbeat, watchdog, reconexión
+
+telegram_bot/
+└── bot.py             # Alertas graduadas + comandos básicos
+
+tests/
+├── test_regime.py
+├── test_news_feed.py
+└── test_momentum.py
+
+ARCHIVOS A MODIFICAR DE FASE 1:
+  - core/engine.py → integrar régimen, news feed, nuevas estrategias
+  - core/risk.py → integrar resolución inminente y correlación
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENTREGABLES FASE 2
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Todos los archivos nuevos listados arriba
+2. Modificaciones a engine.py y risk.py
+3. Tests para régimen, news feed, momentum
+4. Verificar que el bot con Fase 1 + Fase 2 genera señales en paper mode
+5. Si 0 señales en 48h de paper → revisar umbrales y documentar ajuste
+
+================================================================
+FIN — FASE 2: INTELIGENCIA Y ESTRATEGIAS
+Prerrequisito: Fase 1 funcionando + mínimo 7 días de datos recolectados
+Siguiente: prompt_fase3_ux.txt (dashboard, API REST, backtesting)
+================================================================

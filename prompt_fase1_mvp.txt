@@ -1,0 +1,301 @@
+================================================================
+POLYMARKET TRADING BOT — FASE 1: MVP FUNCIONAL
+================================================================
+Bot de trading algorítmico sobre Polymarket.
+IA gratuita (Groq + VADER) + mean reversion + paper mode.
+Esta fase construye el núcleo funcional del bot.
+================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 0: IDENTIDAD Y CONFIGURACIÓN CENTRAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Eres un Senior Python Engineer especializado en sistemas async y
+prediction markets. Vas a construir un bot de trading para Polymarket.
+
+FILOSOFÍA: Encontrar los trades correctos, ni demasiado conservador
+ni demasiado agresivo. El bot debe generar 2-4 trades/día en un
+universo de ~50 mercados activos.
+
+UMBRALES POR DEFECTO (definidos aquí UNA sola vez, referenciar siempre):
+  ZSCORE_THRESHOLD:         1.8
+  MAX_SPREAD_PCT:           6%
+  SENTIMENT_SHIFT:          0.25
+  AI_CONFIDENCE_MIN:        0.60
+  MIN_DAILY_VOLUME:         $1,000
+  CORRELATION_BLOCK:        0.80
+  MAX_DAILY_LOSS_PCT:       8%       (corregido: 5% se activa demasiado en mercados binarios)
+  TRAILING_PCT:             5%       (corregido: 3% genera stop-outs falsos por ruido)
+  BREAKEVEN_TRIGGER:        5%
+  MAX_SLIPPAGE_PCT:         3%
+  MIN_DEPTH_USD:            $500
+  MAX_POSITION_PCT:         10%
+  DEFAULT_POSITION_PCT:     5%
+  PAPER_FEE_PCT:            1.25%
+
+RESTRICCIONES GLOBALES:
+• Nunca inventar APIs — solo documentación oficial de Polymarket y py-clob-client
+• Código production-ready: type hints, docstrings, structlog, tests
+• Loggear SIEMPRE el motivo de cada señal rechazada (clave para calibrar)
+• Nunca bare except — siempre except SpecificException as e
+• Todos los feeds RSS deben ser en INGLÉS (VADER no funciona en español)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 1: INVESTIGACIÓN OBLIGATORIA ANTES DE CODIFICAR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ANTES DE ESCRIBIR UNA SOLA LÍNEA DE CÓDIGO, investigar y documentar:
+
+1. py-clob-client oficial: flujo L1 wallet → API key → firma de órdenes
+2. Endpoints CLOB: order book, place order, cancel, get positions, get fills
+3. getFeeRateBps() — cómo invocarlo desde py-clob-client (no es endpoint REST directo)
+4. Rate limits REALES por endpoint — buscar en documentación oficial, NO inventar números
+5. Ciclo de vida de orden: OPEN → MATCHED → FILLED → SETTLED → tiempos típicos
+6. Estructura exacta de un mercado: conditionId, tokenIds, end_date, categoría
+7. Datos históricos: ¿existe endpoint público? Si no, especificar que el bot
+   colecta sus propios datos desde el despliegue (NO asumir que existen)
+8. Spread típico real en mercados activos de Polymarket
+9. Casos reales de bots en GitHub: "polymarket bot python" — extraer patrones
+10. Limitaciones: órdenes parciales, latencia típica, liquidez real
+11. Costos de gas en Polygon (MATIC) — el bot necesita MATIC además de USDC
+12. Mercados binarios vs multi-outcome: ¿cómo difiere la estructura?
+13. Términos de servicio de Polymarket respecto a bots automatizados
+
+ENTREGABLE: 13+ bullets con hallazgos reales ANTES de proceder.
+Si la investigación revela que algún umbral del Módulo 0 necesita ajuste,
+proponer el cambio con justificación basada en datos reales.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 2: MOTOR DE TRADING CORE (TradingEngine)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+REGLAS DE INTEGRIDAD (hardcoded):
+• Una posición activa por market_id / conditionId
+• Verificación de duplicados antes de CUALQUIER orden
+• Circuit breaker: stop si pérdida > MAX_DAILY_LOSS_PCT en 24h
+• Nunca operar si balance < capital_mínimo_configurado
+• Nunca operar si latencia API > 8s (modo degradado)
+• Queue de prioridad: cancelaciones > modificaciones > nuevas órdenes
+
+TRAILING STOP — STATE MACHINE (4 estados):
+  WATCHING:   precio < entrada * (1 + BREAKEVEN_TRIGGER)
+  BREAKEVEN:  SL = precio_entrada (proteger capital)
+  TRAILING:   SL = max(SL_anterior, precio * (1 - TRAILING_PCT))
+  CLOSING:    precio <= SL → ejecutar cierre (market order en esta fase)
+
+FILTRO DE LIQUIDEZ PRE-TRADE:
+  spread_pct = (best_ask - best_bid) / mid_price * 100
+  depth_5 = sum(qty top 5 niveles bid + ask)
+  slippage_est = position_size_usd / depth_5 * 100
+
+  Rechazar si spread_pct > MAX_SPREAD_PCT
+             OR slippage_est > MAX_SLIPPAGE_PCT
+             OR depth_5 < MIN_DEPTH_USD
+
+  Loggear siempre el motivo del rechazo con valores concretos.
+
+COMISIONES:
+  PAPER: PAPER_FEE_PCT entrada + salida
+  REAL:  getFeeRateBps() en tiempo real — nunca asumir valor fijo
+
+ASYNC: asyncio + aiohttp | timeout: 10s | retry backoff: 2s/8s/30s
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 3: CLIENTE API POLYMARKET (async + rate limiting)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Rate limiter inteligente por endpoint:
+  - Usar los rate limits REALES descubiertos en Módulo 1
+  - Reservar 20% de cuota como buffer de seguridad
+  - Si un endpoint supera 70% de cuota → log warning
+  - Si se agota cuota → esperar, nunca exceder
+
+Clase PolymarketClient (async):
+  - Wrappear py-clob-client con retry + rate limiting
+  - Métodos: get_markets, get_orderbook, place_order, cancel_order,
+    get_positions, get_balance
+  - Auth: L1 wallet según documentación oficial
+
+Clase DataCollector (auto-recolección de datos):
+  - Cada 5 minutos: guardar probabilidad actual de cada mercado monitoreado
+  - Almacenar en SQLite (aiosqlite) con timestamp
+  - Esto construye el dataset para backtesting y régimen (Fases 2-3)
+  - Retención: mínimo 90 días de datos
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 4: IA GRATUITA — GROQ + VADER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STACK GRATUITO:
+  VADER: pip install vaderSentiment → offline, sin límite, instantáneo
+         IMPORTANTE: Solo funciona con texto en INGLÉS
+  Groq:  pip install groq → 14,400 req/día gratis (tier free)
+         Modelo: llama-3.1-70b-versatile
+         Uso: análisis profundo solo cuando VADER detecta shift > SENTIMENT_SHIFT
+
+Clase AIAnalyzer:
+  - daily_limit conservador: 300 de 14,400 disponibles
+  - Si se agota Groq → fallback a VADER puro
+  - Prompt para Groq: pedir JSON con direction, confidence, impact, should_trade
+  - Si confidence < AI_CONFIDENCE_MIN → should_trade = False
+  - NOTA IMPORTANTE: La "confidence" de un LLM NO es una probabilidad calibrada.
+    Los valores tienden a concentrarse en 0.6-0.8. Tener esto en cuenta al
+    interpretar señales — no tratar como probabilidad matemática exacta.
+
+Fallback VADER:
+  direction = "UP" si score > 0.1, "DOWN" si < -0.1, "NEUTRAL" si no
+  should_trade = abs(score) > 0.30
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 5: ESTRATEGIA — MEAN REVERSION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Clase BaseStrategy (abstracta):
+  generate_signal(market_data) -> Signal | None
+  calculate_size(signal, portfolio_state) -> float
+
+MEAN REVERSION:
+  Señal de entrada:
+    z_score = (prob_actual - prob_media_7d) / prob_std_7d
+    if abs(z_score) >= ZSCORE_THRESHOLD:
+      direction = "BUY" si z_score < -ZSCORE_THRESHOLD, "SELL" si no
+
+  LIMITACIÓN DEL Z-SCORE: Las probabilidades en prediction markets NO siguen
+  distribución normal (bounded [0,1], saltos discontinuos con noticias).
+  El z-score es una heurística útil, no una medida estadística exacta.
+
+  Filtros de confirmación (en orden, parar al primer rechazo):
+    1. Volumen > MIN_DAILY_VOLUME
+    2. Filtro de liquidez pre-trade (Módulo 2)
+    3. Si IA disponible: sentiment no contradice dirección (opcional)
+
+  Salida: z_score regresa a [-0.5, 0.5] OR trailing stop activado
+
+  Loggear SIEMPRE señales generadas Y rechazadas con motivo y valores.
+
+NOTA: Esta es la única estrategia en Fase 1. Momentum y otras se añaden en Fase 2.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 6: GESTIÓN DE PORTAFOLIO (básica)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SIZING (conservador hasta tener datos):
+  Si < 50 trades históricos: usar DEFAULT_POSITION_PCT fijo
+  Si >= 50 trades: calcular Kelly criterion:
+    kelly_full = (win_rate * avg_win - (1-win_rate) * avg_loss) / avg_win
+    kelly_fraction = kelly_full * 0.25  (Quarter Kelly)
+    position_size = capital * min(kelly_fraction, MAX_POSITION_PCT)
+
+ANTI-MARTINGALE:
+  consecutive_losses = contar pérdidas consecutivas
+  recovery_factor = max(0.30, 1.0 - consecutive_losses * 0.15)
+  Si consecutive_losses >= 5: PAUSA 24h + alerta
+
+LÍMITES POR CATEGORÍA:
+  política: 40% | crypto: 30% | deportes: 20% | otros: 30%
+  Hardcoded, no configurables por el usuario
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 7: PAPER MODE Y SEGURIDAD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PAPER MODE (default obligatorio en Fase 1):
+  - Simular comisiones PAPER_FEE_PCT + slippage variable (no fijo)
+  - Latencia simulada: random 50-200ms
+  - Registrar todos los trades simulados en SQLite
+
+TRANSICIÓN A REAL (se implementa pero NO se activa hasta tener 7+ días paper):
+  - 6 pasos de confirmación, escribir "CONFIRMAR MODO REAL"
+  - Validar: balance suficiente, API key válida, al menos 10 trades paper
+
+SEGURIDAD:
+  - .env para todas las API keys (Polymarket, Groq, Telegram)
+  - .env DEBE estar en .gitignore (crear si no existe)
+  - Audit log append-only para todas las acciones en modo real
+  - NUNCA loggear API keys ni private keys en structlog
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 8: ARQUITECTURA Y DEPLOY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ESTRUCTURA DE ARCHIVOS:
+polymarket-bot/
+├── core/
+│   ├── engine.py          # TradingEngine + loop principal
+│   ├── state.py           # PositionManager + SQLite
+│   ├── risk.py            # Trailing stop, circuit breaker, anti-martingale
+│   └── paper.py           # PaperTradingEngine con slippage variable
+├── api/
+│   ├── polymarket.py      # Cliente CLOB async + retry + rate limiting
+│   ├── auth.py            # Auth L1 wallet
+│   └── data_collector.py  # Recolector automático de datos históricos
+├── intelligence/
+│   └── ai_analyzer.py     # Groq + VADER (solo inglés)
+├── strategies/
+│   ├── base.py            # BaseStrategy abstracta
+│   └── mean_reversion.py  # Z-score + sentiment
+├── data/
+│   ├── trades.db          # SQLite: trades, posiciones
+│   └── market_history.db  # Datos recolectados automáticamente
+├── tests/
+│   ├── test_engine.py
+│   ├── test_risk.py
+│   ├── test_strategies.py
+│   └── test_calibration.py  # Verificar: genera 1-8 señales/día con defaults
+├── .env.example           # POLYMARKET_API_KEY, POLYMARKET_SECRET,
+│                          # WALLET_ADDRESS, GROQ_API_KEY (gratis: console.groq.com)
+├── .gitignore             # Incluir: .env, *.db, __pycache__, audit.log
+├── requirements.txt       # Versiones fijadas
+├── Dockerfile
+├── railway.toml
+└── README.md              # Guía en 5 pasos para MVP
+
+STACK: Python 3.11+, FastAPI (mínimo), asyncio, aiohttp, aiosqlite,
+       structlog, vaderSentiment, groq, py-clob-client
+
+DEPLOY: Railway (~$5/mes)
+  - GET /health → {"status", "uptime_s", "positions", "mode"}
+  - Health check cada 60s → auto-restart si unhealthy
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENTREGABLES FASE 1
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Resumen de investigación (Módulo 1) con 13+ hallazgos reales
+2. Árbol de directorios completo
+3. Código por módulo en orden de dependencia:
+   a. api/polymarket.py + auth.py + data_collector.py
+   b. core/engine.py + state.py
+   c. core/risk.py (trailing, circuit breaker, anti-martingale)
+   d. intelligence/ai_analyzer.py (Groq + VADER)
+   e. strategies/base.py + mean_reversion.py
+   f. core/paper.py
+4. Tests unitarios incluyendo test_calibration.py
+5. requirements.txt, .env.example, .gitignore
+6. Dockerfile + railway.toml
+7. README.md (guía de 5 pasos para poner el MVP en marcha)
+
+ESTÁNDARES DE CÓDIGO:
+  • Type hints completos
+  • Docstrings Google style en clases y métodos públicos
+  • structlog (nunca print())
+  • Tests con pytest + pytest-asyncio
+  • ruff para linting
+
+SI ALGO NO ES IMPLEMENTABLE CON LA API ACTUAL:
+  Documentar la limitación y proponer workaround concreto.
+  NO inventar endpoints ni asumir funcionalidad no documentada.
+
+================================================================
+FIN — FASE 1: MVP FUNCIONAL
+Siguiente: prompt_fase2_inteligencia.txt (RSS, régimen, momentum)
+================================================================

@@ -1,0 +1,214 @@
+================================================================
+POLYMARKET TRADING BOT — FASE 3: UX, DASHBOARD Y BACKTESTING
+================================================================
+Prerrequisito: Fase 1 + Fase 2 completadas y funcionando en paper mode.
+Esta fase añade: dashboard web, API REST, backtesting, smart exit, Telegram completo.
+================================================================
+
+CONTEXTO: Las Fases 1-2 dejaron el bot con:
+  - Motor core con trailing stop, circuit breaker, anti-martingale
+  - Estrategias: mean reversion + momentum
+  - RSS feeds + VADER + Groq para sentiment
+  - Detector de régimen (4 estados)
+  - Resolución inminente, correlación, calendario de eventos
+  - Health monitor con reconexión inteligente
+  - Telegram básico (alertas + /status /balance /posiciones)
+  - DataCollector con mínimo 14 días de datos acumulados
+  - Estructura completa en core/, api/, intelligence/, strategies/, monitoring/
+
+UMBRALES: Usar los del Módulo 0 de Fase 1. Si se ajustaron en fases previas,
+respetar esos ajustes.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 15: BACKTESTING ENGINE + WALK-FORWARD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+REQUISITO: Usa los datos recolectados por DataCollector (Fase 1).
+No asumir endpoints externos de datos históricos.
+
+UMBRALES DE ACTIVACIÓN (estrategia pasa backtesting si):
+  Sharpe >= 0.4
+  MaxDD <= 35%
+  Trades >= 20
+  p-value <= 0.10
+  Profit factor >= 1.1
+
+WALK-FORWARD (anti-overfitting):
+  Datos disponibles → ventanas deslizantes (75% train + 25% validation)
+  Grid search: máximo 300 combinaciones de parámetros
+  Score = validation_sharpe si mean(train_sharpes) > 0.3, else -inf
+
+SEÑAL DE ALERTA: Si estrategia pasa backtesting pero en paper no genera
+señales en 3+ días → umbrales probablemente muy estrictos.
+
+UI: semáforo VERDE/AMARILLO/ROJO con explicación del umbral que no pasó.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 16: SMART EXIT MANAGER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+(Fusiona los Módulos 12 y 22 del prompt original — eliminando duplicación)
+
+ESTIMADOR DE IMPACTO PRE-TRADE:
+  market_impact = position_size_usd / depth_ask_5 * 100
+  Si impact <= 1.5%: salida inmediata (market order)
+  Si impact 1.5-3%:  TWAP 3 partes, 60s intervalo
+  Si impact > 3%:    TWAP 5 partes, 120s intervalo
+
+LIQUIDATION PRICE ESTIMATOR (antes de abrir):
+  exit_price_est = mid_price * (1 + slippage_est)
+  Si exit_price_est < breakeven_price: RECHAZAR TRADE
+
+SMART LIMIT ORDERS (reducir comisiones):
+  1. Intentar limit order cerca del best bid/ask
+  2. Esperar 30s → si no fill → limit más agresivo al mid price
+  3. Esperar 30s → si no fill → market order (último recurso)
+  Si urgencia HIGH (trailing stop): market order directo
+
+SLIPPAGE REALISTA PARA PAPER MODE:
+  Mantener distribución histórica de slippage por mercado
+  Al simular: samplear de la distribución, no usar valor fijo
+  Ajustar por tamaño: slippage_final *= min(2.0, size / avg_order_size)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 17: API REST (FastAPI + Pydantic)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ENDPOINTS:
+  GET  /health                           → watchdog
+  GET  /api/status                       → estado + régimen actual
+  POST /api/start | POST /api/stop       → control del bot
+  GET  /api/positions                    → posiciones + trailing state
+  POST /api/positions/{id}/close         → cierre manual (SmartExit)
+  GET  /api/trades                       → historial con filtros
+  GET  /api/metrics                      → PnL, Sharpe, MaxDD, win rate
+  GET  /api/metrics/calibration          → stats señales/rechazos del día
+  POST /api/config                       → actualizar config con validación
+  GET  /api/backtest/{strategy}          → resultado backtesting
+  GET  /api/regime/{market_id}           → régimen actual
+
+SEGURIDAD (corregido del prompt original):
+  - JWT con HTTPS obligatorio (no BasicAuth — insuficiente para capital real)
+  - Rate limiting con slowapi
+  - CORS estricto (solo orígenes conocidos)
+  - Security headers (X-Content-Type-Options, etc.)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 18: DASHBOARD WEB + ONBOARDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PRINCIPIO: "Si el usuario necesita leer documentación, fallamos"
+
+ONBOARDING WIZARD (5 pasos, ~10 minutos):
+  1. Cuenta: API key, wallet, modo PAPER/REAL
+  2. Capital/Riesgo: sliders con valores default visibles
+  3. Mercados/Estrategias: categorías + semáforos backtesting
+  4. IA y Noticias: Groq API key (opcional), RSS feeds activos
+  5. Notificaciones: Telegram token, alertas por nivel
+
+PANEL DE CALIBRACIÓN (tab en dashboard):
+  "Señales del último ciclo":
+    Total detectadas | Rechazadas por spread | Por z-score | Por IA | Por liquidez
+    → Pasaron filtros: N → Ejecutadas: N
+  Si rechazadas por un filtro > 60%: warning sugiriendo ajuste
+  Botón "Ajustar umbrales" → formulario de calibración
+
+DASHBOARD PRINCIPAL (auto-refresh 5s):
+  TOP: Estado | Modo | Balance | PnL hoy | Régimen | Señales hoy
+  CENTRO: Tabla posiciones (trailing state, botón Cerrar)
+  DERECHA: Log tiempo real con filtro por nivel
+  BOTTOM: Heat map exposición por categoría
+
+CONTROLES: [Iniciar] [Detener] [Calibrar] [Historial] [Exportar]
+
+STACK FRONTEND: Jinja2 + Alpine.js + Chart.js + htmx (auto-refresh)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 19: TELEGRAM COMPLETO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Extender el bot básico de Fase 2 con todos los comandos:
+
+/start /stop /status /balance /posiciones /trades
+/metricas /calibracion /backtest /regimen
+/config /exportar /help
+
+/calibracion → resumen del último ciclo:
+  "Ciclo 14:30-15:30 UTC:
+   Señales detectadas: 8 | Ejecutadas: 2 | Rechazadas: 6
+   Mayor causa de rechazo: spread > 6% (4 de 6)"
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 20: TRADE JOURNAL + EXPORTACIÓN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+POST-CIERRE AUTOMÁTICO: registrar señal original, contexto, sentiment,
+noticias relacionadas en ventana ±2h del trade.
+
+ANÁLISIS GROQ (si disponible): 3 bullets por trade cerrado:
+  • Qué salió bien
+  • Qué salió mal
+  • Qué ajustar
+
+EXPORTACIÓN CSV: fecha, mercado, entrada, salida, PnL neto, comisiones, estrategia
+  GET /api/export/trades?format=csv
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NUEVOS ARCHIVOS A CREAR EN FASE 3
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+backtesting/
+├── backtester.py      # Motor + métricas
+└── walk_forward.py    # Optimización sin overfitting
+
+execution/
+└── smart_exit.py      # TWAP + impact estimator + limit escalation
+
+dashboard/
+├── main.py            # FastAPI app + JWT auth
+├── routes/            # Todos los endpoints Módulo 17
+└── templates/         # Jinja2 + Alpine.js + Chart.js
+    ├── index.html
+    ├── calibration.html
+    └── onboarding.html
+
+journal/
+├── recorder.py        # Registro automático post-trade
+└── ai_journal.py      # Análisis Groq post-cierre
+
+tests/
+├── test_backtester.py
+├── test_smart_exit.py
+└── test_api_endpoints.py
+
+MODIFICAR:
+  - telegram_bot/bot.py → añadir todos los comandos nuevos
+  - core/engine.py → integrar smart exit y backtesting
+  - requirements.txt → añadir PyJWT, slowapi
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENTREGABLES FASE 3
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Backtesting engine con walk-forward
+2. Smart exit manager (TWAP + slippage realista)
+3. API REST completa con JWT
+4. Dashboard web con onboarding wizard y panel de calibración
+5. Telegram con todos los comandos
+6. Trade journal con análisis post-cierre
+7. Tests para backtester, smart exit, API endpoints
+8. Verificar: dashboard muestra datos reales del bot en paper mode
+
+================================================================
+FIN — FASE 3: UX, DASHBOARD Y BACKTESTING
+Prerrequisito: Fases 1-2 funcionando + mínimo 14 días de datos
+Siguiente: prompt_fase4_avanzado.txt (optimizador, shadow, A/B, stress)
+================================================================
