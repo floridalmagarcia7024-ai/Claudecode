@@ -1,0 +1,989 @@
+================================================================
+POLYMARKET TRADING BOT — MASTER PROMPT v5.0 ULTIMATE
+================================================================
+Sistema de trading algorítmico institucional sobre Polymarket.
+IA gratuita (Groq + VADER) + RSS sin API + 25 módulos.
+Calibrado para encontrar 2-4 trades/día de alta calidad.
+================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 0: IDENTIDAD, ROL Y FILOSOFÍA DE CALIBRACIÓN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Eres un equipo de élite compuesto por:
+— Senior Python Engineer (10+ años, sistemas async en producción)
+— Quant Trader especializado en prediction markets y market microstructure
+— Product Designer UX/UI (SaaS B2C zero-friction)
+— Arquitecto de software (sistemas distribuidos, fault-tolerance)
+— Data Scientist (NLP, series temporales, estadística aplicada)
+
+FILOSOFÍA CRÍTICA — EL BALANCE ENTRE SEGURIDAD Y OPORTUNIDAD:
+Un bot demasiado conservador es tan inútil como uno que pierde capital.
+El objetivo NO es evitar todos los trades — es encontrar los trades correctos.
+
+PRINCIPIO DE CALIBRACIÓN CENTRAL:
+  Los umbrales deben generar 2-4 trades/día en un universo de 50 mercados.
+  Menos de 1 trade/día → umbrales demasiado restrictivos, ajustar hacia abajo.
+  Más de 8 trades/día → señales de baja calidad, ajustar hacia arriba.
+  El bot DEBE loggear cuántas señales rechazó y POR QUÉ en cada ciclo.
+
+UMBRALES CALIBRADOS (valores por defecto balanceados — no los vuelvas excesivos):
+  Z-score entrada:        >= 1.8  (NO 2.5, eso elimina el 80% de oportunidades)
+  Spread máximo:          <= 6%   (NO 3%, mercados de Polymarket son menos líquidos)
+  Sentiment shift:        >= 0.25 (NO 0.50, muy pocos eventos generan shifts tan grandes)
+  Confianza IA (Groq):    >= 0.60 (NO 0.80, demasiado restrictivo para señales reales)
+  Volumen mínimo mercado: >= $1,000/día (NO $10,000, limita mucho el universo)
+  Correlación bloqueo:    >= 0.80 (NO 0.60, demasiados falsos positivos de correlación)
+
+RESTRICCIONES GLOBALES (no negociables):
+• Nunca inventar APIs — solo documentación oficial de Polymarket
+• Código production-ready: type hints, docstrings, structlog, tests
+• Zero-config UX: el usuario nunca toca el código
+• Lógica de riesgo hardcoded en límites máximos (no configurables)
+• Loggear SIEMPRE el motivo de cada señal rechazada (fundamental para calibrar)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 1: INVESTIGACIÓN OBLIGATORIA ANTES DE CODIFICAR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ANTES DE ESCRIBIR UNA SOLA LÍNEA DE CÓDIGO, investigar y documentar:
+
+1. py-clob-client oficial: flujo L1 wallet → API key → firma de órdenes
+2. Endpoints CLOB: order book, place order, cancel, get positions, get fills
+3. getFeeRateBps() — cuándo se llama, formato de respuesta, casos edge
+4. Rate limits actuales por endpoint (crítico para el RateLimiter del Módulo 22)
+5. Ciclo de vida de orden: OPEN → MATCHED → FILLED → SETTLED → tiempos típicos
+6. Estructura exacta de un mercado: conditionId, tokenIds, end_date, categoria
+7. API pública de datos históricos de probabilidades (para backtesting)
+8. Spread típico real en mercados activos de Polymarket (para calibrar filtros)
+9. Casos reales de bots en GitHub: "polymarket bot python" — extraer patrones
+10. Limitaciones documentadas: órdenes parciales, latencia típica, liquidez real
+
+ENTREGABLE: 10+ bullets con hallazgos reales ANTES de proceder.
+Señalar ⚠️ limitaciones que afecten estrategias o calibración de umbrales.
+Incluir: ¿cuál es el spread promedio real en mercados activos de Polymarket?
+         ¿cuántos mercados activos hay típicamente con > $1,000 de volumen?
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 2: MOTOR DE TRADING CORE (TradingEngine)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+REGLAS DE INTEGRIDAD (hardcoded):
+• Una posición activa por market_id / conditionId
+• Verificación de duplicados antes de CUALQUIER orden
+• Circuit breaker: stop si pérdida > max_daily_loss_pct en 24h (default: 5%)
+• Nunca operar si balance < capital_minimo_configurado
+• Nunca operar si latencia API > 8s (modo degradado)
+• Queue: cancelaciones > modificaciones > nuevas órdenes
+
+TRAILING STOP — STATE MACHINE (4 estados):
+  WATCHING:   precio < entrada * (1 + breakeven_trigger)  [default: 5%]
+  BREAKEVEN:  SL = precio_entrada (proteger capital)
+  TRAILING:   SL = max(SL_anterior, precio * (1 - trailing_pct))  [default: 3%]
+  CLOSING:    precio <= SL → ejecutar SmartExit
+
+FILTRO DE LIQUIDEZ PRE-TRADE (calibrado para no ser excesivamente restrictivo):
+  spread_pct = (best_ask - best_bid) / mid_price * 100
+  depth_5 = sum(qty top 5 niveles bid + ask)
+  slippage_est = position_size_usd / depth_5 * 100
+
+  Rechazar si:
+    spread_pct > config.max_spread          [default calibrado: 6%, no 3%]
+    slippage_est > config.max_slippage      [default calibrado: 3%, no 1%]
+    depth_5 < config.min_depth_usd          [default calibrado: $500, no $2000]
+
+  CRÍTICO — LOGGEAR SIEMPRE EL MOTIVO DEL RECHAZO:
+    logger.info("Señal rechazada por liquidez", market=id,
+                spread=spread_pct, max_spread=config.max_spread,
+                slippage=slippage_est, depth=depth_5)
+
+COMISIONES:
+  PAPER: config.paper_fee_pct entrada + salida  [default: 1.25%]
+  REAL:  getFeeRateBps() en tiempo real — nunca asumir valor fijo
+
+ASYNC: asyncio + aiohttp | timeout: 10s | retry backoff: 2s/8s/30s
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 3: NEWS FEED PIPELINE (100% gratuito, sin API keys)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+IMPLEMENTACIÓN TÉCNICA REAL — pip install feedparser aiohttp vaderSentiment
+
+RSS FEEDS POR CATEGORÍA (configurables desde dashboard, CERO costo):
+  política:   reuters.com/rssfeed/politicsNews
+              rss.politico.com/politico.xml
+              thehill.com/rss/syndicator/19109
+  crypto:     coindesk.com/arc/outboundfeeds/rss
+              cointelegraph.com/rss
+  general:    feeds.bbci.co.uk/news/world/rss.xml
+              feeds.reuters.com/reuters/topNews
+  deportes:   espn.go.com/espn/rss/news
+              rss.marca.com/rss/portada.xml
+
+NOTA TÉCNICA — feedparser no requiere API key, registro, ni cuenta:
+  feed = feedparser.parse("https://feeds.reuters.com/reuters/topNews")
+  # Devuelve lista de entradas con title, summary, published, link
+  # Funciona en cualquier servidor, gratis, para siempre
+
+PIPELINE COMPLETO (clase NewsFeedPipeline):
+
+  async def run_forever(self, active_markets):
+    while True:
+      await self.fetch_and_score(active_markets)
+      await asyncio.sleep(60)  # cada 60s para mercados activos
+
+  async def fetch_and_score(self, active_markets):
+    for category, feeds in RSS_FEEDS.items():
+      for feed_url in feeds:
+        try:
+          feed = feedparser.parse(feed_url)
+          for entry in feed.entries[:10]:  # últimas 10 por feed
+            title = entry.get("title", "")
+            h = hashlib.md5(title.encode()).hexdigest()
+            if h in self.seen_hashes: continue
+            self.seen_hashes.add(h)
+
+            # PASO 1: Filtro de relevancia con keywords del mercado
+            relevant_markets = self.find_relevant_markets(title, active_markets)
+            if not relevant_markets: continue
+
+            # PASO 2: VADER scoring (offline, sin límites, instantáneo)
+            score = self.vader.polarity_scores(title)["compound"]
+
+            for market_id in relevant_markets:
+              prev_score = self.market_scores.get(market_id, 0.0)
+              self.market_scores[market_id] = score
+              shift = abs(score - prev_score)
+
+              # UMBRAL CALIBRADO: 0.25 no 0.50 — genera señales reales
+              if shift > config.sentiment_shift_threshold:  # default: 0.25
+                # PASO 3: Escalar a IA (Groq) para análisis profundo
+                await self.analyze_with_ai(title, market_id, score, shift)
+        except Exception as e:
+          logger.warning("feed_error", url=feed_url, error=str(e))
+
+  def find_relevant_markets(self, title, markets):
+    """Matching de keywords — ni demasiado estricto ni demasiado laxo"""
+    title_lower = title.lower()
+    relevant = []
+    for market in markets:
+      # Keywords del mercado definidas al crearlo en Polymarket
+      # Ej: mercado "¿Ganará Harris?" → keywords: ["harris", "democrat", "election"]
+      score = sum(1 for kw in market.keywords if kw in title_lower)
+      if score >= 1:  # al menos 1 keyword match (no exigir 2+, muy restrictivo)
+        relevant.append(market.id)
+    return relevant
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 4: IA GRATUITA — GROQ + VADER (estrategia dual)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STACK GRATUITO COMPLETO:
+  VADER:  pip install vaderSentiment → offline, sin límite, instantáneo
+          Uso: análisis continuo de todos los titulares (flujo base)
+  Groq:   pip install groq → 14,400 req/día gratis en tier free
+          Registro: console.groq.com (email, sin tarjeta)
+          Modelo: llama-3.1-70b-versatile (supera GPT-3.5 en este uso)
+          Uso: análisis profundo solo cuando VADER detecta shift > umbral
+  Gemini: Alternativa si Groq falla → 1,500 req/día gratis
+          pip install google-generativeai
+
+CLASE AIAnalyzer (implementar completa):
+
+  class AIAnalyzer:
+    def __init__(self, groq_api_key: str):
+      self.client = AsyncGroq(api_key=groq_api_key)
+      self.calls_today = 0
+      self.daily_limit = 300  # conservador: 300 de 14,400 disponibles
+
+    async def analyze_headline(self, headline: str, market: dict,
+                                vader_score: float, shift: float) -> dict:
+      """Análisis profundo — llamar solo cuando VADER detecta shift relevante"""
+      if self.calls_today >= self.daily_limit:
+        # Fallback a VADER puro si se agota el límite del día
+        return self._vader_fallback(vader_score)
+
+      prompt = f"""Eres un analista experto en prediction markets.
+Analiza el impacto de este titular en el mercado de Polymarket indicado.
+
+TITULAR: {headline}
+MERCADO: {market['question']}
+PROBABILIDAD ACTUAL: {market['probability']:.1%}
+CATEGORÍA: {market['category']}
+CAMBIO DE SENTIMENT DETECTADO: {shift:+.2f} (VADER)
+
+Responde SOLO con JSON válido, sin texto adicional ni backticks:
+{{
+  "direction": "UP" | "DOWN" | "NEUTRAL",
+  "confidence": 0.0-1.0,
+  "impact": "HIGH" | "MEDIUM" | "LOW",
+  "reasoning": "máximo 15 palabras explicando el impacto",
+  "time_horizon": "minutes" | "hours" | "days",
+  "should_trade": true | false,
+  "risk_level": "LOW" | "MEDIUM" | "HIGH"
+}}
+
+IMPORTANTE: Si el titular es ambiguo o no tiene impacto claro,
+devuelve direction=NEUTRAL y should_trade=false. No forzar señales."""
+
+      try:
+        response = await self.client.chat.completions.create(
+          model="llama-3.1-70b-versatile",
+          messages=[{"role": "user", "content": prompt}],
+          max_tokens=150,
+          temperature=0.1,  # bajo = consistente, no creativo
+        )
+        self.calls_today += 1
+        result = json.loads(response.choices[0].message.content)
+
+        # UMBRAL CALIBRADO: 0.60 no 0.80
+        # Con 0.80 el bot rechaza señales reales de calidad media
+        if result["confidence"] < config.ai_confidence_threshold:  # default: 0.60
+          result["should_trade"] = False
+          logger.info("ai_signal_below_confidence",
+                      confidence=result["confidence"],
+                      threshold=config.ai_confidence_threshold)
+        return result
+      except Exception as e:
+        logger.warning("ai_analysis_failed", error=str(e))
+        return self._vader_fallback(vader_score)
+
+    def _vader_fallback(self, vader_score: float) -> dict:
+      """Fallback cuando Groq no está disponible — usar VADER directo"""
+      return {
+        "direction": "UP" if vader_score > 0.1 else "DOWN" if vader_score < -0.1 else "NEUTRAL",
+        "confidence": min(abs(vader_score), 0.65),
+        "impact": "MEDIUM",
+        "should_trade": abs(vader_score) > 0.30,  # umbral VADER calibrado
+        "risk_level": "MEDIUM",
+        "reasoning": f"VADER fallback: score={vader_score:.2f}"
+      }
+
+    async def analyze_closed_trade(self, trade: dict) -> str:
+      """Journal post-trade — llamar solo al cerrar posición"""
+      if self.calls_today >= self.daily_limit:
+        return "Journal no disponible: límite diario de IA alcanzado."
+      prompt = f"""Trade cerrado en Polymarket:
+Mercado: {trade['market']}
+Entrada: {trade['entry_price']:.2%} → Salida: {trade['exit_price']:.2%}
+PnL: {trade['pnl_pct']:+.1%} | Estrategia: {trade['strategy']}
+Señal original: {trade['signal_context']}
+Razón de salida: {trade['exit_reason']}
+
+Responde en exactamente 3 bullets concisos (máximo 15 palabras cada uno):
+• Qué salió bien:
+• Qué salió mal:
+• Qué ajustar:"""
+      response = await self.client.chat.completions.create(
+        model="llama-3.1-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=180,
+      )
+      self.calls_today += 1
+      return response.choices[0].message.content
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 5: DETECTOR DE RÉGIMEN DE MERCADO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CRÍTICO — sin esto el bot usa siempre la misma estrategia
+aunque el mercado haya cambiado de modo completamente.
+
+4 REGÍMENES (detectar cada 4h usando datos históricos del mercado):
+
+  TRENDING_UP:
+    Condición: > 60% de las velas de 1h son alcistas en últimas 12h
+               AND slope_linreg(probabilidades_24h) > 0.002/h
+    Estrategias activas: MOMENTUM (principal), MEAN_REVERSION (desactivada)
+    Ajustes: SL más amplio (+1.5%), TP más lejano (+3%), size normal
+
+  TRENDING_DOWN:
+    Condición: > 60% de velas bajistas AND slope < -0.002/h
+    Estrategias activas: MOMENTUM inverso
+    Ajustes: mismos que TRENDING_UP pero dirección opuesta
+
+  RANGING:
+    Condición: precio oscila ±2% alrededor de media en 12h
+               AND Bollinger Band width < 0.04
+    Estrategias activas: MEAN_REVERSION (principal), LIQUIDITY_CAPTURE
+    Ajustes: SL más cercano (-0.5%), TP más cercano (-2%), size normal
+
+  HIGH_VOLATILITY:
+    Condición: ATR(14) > 2x ATR promedio de los últimos 30 días
+               OR spread promedio del mercado > 2x su promedio histórico
+    Estrategias activas: NINGUNA — modo observación
+    Ajustes: reducir size todas las posiciones 50%, no abrir nuevas
+    EXCEPCIÓN: si hay señal de IA con confidence > 0.80 → permitir tamaño 30%
+
+class MarketRegimeDetector:
+  def detect(self, market_id: str, price_history: list) -> Regime:
+    closes = [p.probability for p in price_history[-24:]]  # 24h de datos
+
+    # Slope de tendencia
+    n = len(closes)
+    slope = (closes[-1] - closes[0]) / max(n, 1)
+
+    # Bollinger Band width
+    mean = statistics.mean(closes)
+    std = statistics.stdev(closes) if len(closes) > 1 else 0
+    bb_width = (2 * std) / mean if mean > 0 else 0
+
+    # ATR simplificado
+    ranges = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
+    atr = statistics.mean(ranges[-14:]) if len(ranges) >= 14 else 0
+    atr_avg_30d = self.get_avg_atr(market_id, days=30)
+
+    if atr > atr_avg_30d * 2:
+      return Regime.HIGH_VOLATILITY
+    elif slope > 0.002 and sum(1 for i in range(1, n) if closes[i] > closes[i-1]) > n * 0.6:
+      return Regime.TRENDING_UP
+    elif slope < -0.002 and sum(1 for i in range(1, n) if closes[i] < closes[i-1]) > n * 0.6:
+      return Regime.TRENDING_DOWN
+    else:
+      return Regime.RANGING
+
+  Telegram al cambiar régimen: "📊 {market}: RANGING → TRENDING_UP (slope={slope:.4f})"
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 6: ESTRATEGIAS DE TRADING (4 estrategias, calibradas)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BaseStrategy (clase abstracta):
+  generate_signal(market_data, regime) -> Signal | None
+  calculate_size(signal, portfolio_state) -> float
+  validate_signal(signal, filters) -> bool
+
+ESTRATEGIA 1 — MEAN REVERSION (mejor en régimen RANGING):
+  Señal de entrada:
+    z_score = (prob_actual - prob_media_7d) / prob_std_7d
+    if abs(z_score) >= config.zscore_threshold:  # default CALIBRADO: 1.8 no 2.5
+      direction = "BUY" if z_score < -1.8 else "SELL"
+
+  Filtro de confirmación (aplicar en orden, NO todos a la vez — eso mata las señales):
+    1. Régimen == RANGING (obligatorio para esta estrategia)
+    2. Sentiment de Groq no contradice la dirección (opcional, si Groq disponible)
+    3. Volumen > config.min_volume  [default: $1,000, no $10,000]
+
+  Salida: z_score regresa a [-0.5, 0.5] OR trailing stop activado
+
+  NOTA DE CALIBRACIÓN: Con z_score >= 2.5 este mercado generaría ~1 señal/semana.
+  Con z_score >= 1.8 genera ~2-3 señales/semana en mercados activos.
+
+ESTRATEGIA 2 — MOMENTUM (mejor en régimen TRENDING):
+  Señal de entrada:
+    cambio_1h = prob_actual - prob_hace_1h
+    volumen_1h vs volumen_promedio_7d
+    if abs(cambio_1h) >= 0.025 AND volumen_1h > volumen_promedio * 1.5:
+      direction = "BUY" if cambio_1h > 0 else "SELL"
+
+  Confirmación adicional (opcional):
+    if ai_analysis.direction == direction AND ai_analysis.confidence >= 0.60:
+      signal_strength += 0.2  # boost en sizing con Kelly
+
+  Salida: momentum pierde fuerza (cambio_1h reciente < 0.01) OR trailing stop
+
+ESTRATEGIA 3 — LIQUIDITY CAPTURE (market making, régimen RANGING):
+  Solo en mercados con: volumen_diario > $5,000 Y spread < 4%
+  Colocar órdenes limit bid/ask con spread propio de 1-2%
+  Gestión de inventario: si posición neta > 20% del size máximo → neutralizar
+  ⚠️ Verificar en investigación (Módulo 1) si CLOB permite actualizar órdenes
+
+ESTRATEGIA 4 — CROSS-MARKET ARBITRAGE:
+  Trigger: cuando Módulo 11 detecta divergencia > 8% vs Metaculus/PredictIt
+  Entrar en dirección del mercado externo más informado
+  Salida: divergencia se reduce a < 3% OR trailing stop
+
+PARA CADA SEÑAL GENERADA, SIEMPRE LOGGEAR:
+  logger.info("signal_generated",
+    strategy=nombre, market=id, direction=dir,
+    z_score=z, sentiment=score, ai_confidence=conf,
+    regime=regime, size_usd=size)
+
+PARA CADA SEÑAL RECHAZADA, SIEMPRE LOGGEAR EL MOTIVO:
+  logger.info("signal_rejected",
+    strategy=nombre, market=id, reason=motivo,
+    spread=spread_actual, threshold=max_spread,
+    z_score=z, z_threshold=config.zscore_threshold)
+  # Este log es oro para calibrar — ver en dashboard qué filtro rechaza más
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 7: BACKTESTING ENGINE + WALK-FORWARD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+NINGUNA estrategia se activa sin pasar backtesting.
+
+UMBRALES DE ACTIVACIÓN (balanceados — no tan estrictos que bloqueen todo):
+  ✓ Sharpe >= 0.4   (no 0.5 — con pocos datos es difícil superar 0.5)
+  ✓ MaxDD <= 35%    (no 30% — prediction markets son volátiles por naturaleza)
+  ✓ Trades >= 20    (no 30 — 90 días pueden no dar 30 trades con umbrales correctos)
+  ✓ p-value <= 0.10 (no 0.05 — más permisivo con pocos datos históricos)
+  ✓ Profit factor >= 1.1 (no 1.2)
+
+WALK-FORWARD (evitar overfitting):
+  90 días de datos → 12 ventanas deslizantes (9 train + 3 validation)
+  Grid search: máximo 300 combinaciones de parámetros (no 500 — más rápido)
+  Score = validation_sharpe si mean(train_sharpes) > 0.3 else -inf
+
+SEÑAL DE ALERTA: si la estrategia pasa backtesting pero en Paper mode
+  no genera señales en > 3 días → revisar umbrales, probablemente muy estrictos.
+
+UI: semáforo VERDE/AMARILLO/ROJO con explicación del umbral que no pasó.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 8: GESTIÓN DE PORTAFOLIO (Kelly + correlaciones)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+KELLY CRITERION (calibrado):
+  kelly_full = (win_rate * avg_win - (1-win_rate) * avg_loss) / avg_win
+  kelly_fraction = kelly_full * 0.25  # Quarter Kelly — conservador
+  position_size = capital * min(kelly_fraction, config.max_position_pct)
+
+  Si < 20 trades históricos: usar config.default_position_pct (default: 5%)
+  Recalcular cada 30 trades o semanalmente
+
+DYNAMIC SIZING POR CONFIANZA DE SEÑAL:
+  signal_strength = 0.5 + (ai_confidence - 0.60) * 0.5  # escala 0.5 a 1.0
+  final_size = base_kelly_size * signal_strength
+  # Señal débil (conf=0.60): 50% del tamaño base
+  # Señal fuerte (conf=0.90): 65% del tamaño base
+
+ANTI-MARTINGALE (protección de rachas):
+  consecutive_losses = contar_pérdidas_consecutivas_recientes()
+  recovery_factor = max(0.30, 1.0 - consecutive_losses * 0.15)
+  # 0 pérdidas: 100% | 2 pérdidas: 70% | 4 pérdidas: 40%
+  if consecutive_losses >= 5:
+    PAUSA_AUTOMÁTICA_24H()
+    alert_telegram("5 pérdidas consecutivas — bot pausado 24h para revisión")
+
+CORRELACIÓN DE PORTAFOLIO:
+  Umbral: >= 0.80 (no 0.70 — menos falsos positivos de correlación)
+  Exposición correlacionada máxima: 25% del capital
+
+LÍMITES POR CATEGORÍA (calibrados):
+  política: 40% | crypto: 30% | deportes: 20% | otros: 30%
+  Hardcoded techo: nunca superable desde config
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 9: STRESS TESTING Y GESTIÓN DE ESCENARIOS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Correr diariamente a las 00:00 UTC (no bloquea el loop principal — usar asyncio.create_task)
+
+ESCENARIOS:
+  1. Flash crash: todas las posiciones -15% simultáneamente
+  2. Correlación colapsa: posiciones correlacionadas en dirección opuesta
+  3. Liquidez seca: spread de todos los mercados sube a max histórico
+  4. Cisne negro: 1 posición pierde 100% (mercado resuelve contra el bot)
+  5. API muerta 4h: simular qué habría pasado sin poder gestionar posiciones
+
+Para cada escenario: calcular PnL simulado, ¿activa circuit breaker?, ¿mayor daño?
+Si escenario muestra pérdida > 15% del capital → alerta Telegram inmediata
+Mostrar en dashboard en sección "Salud del portafolio"
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 10: INTELIGENCIA DE MERCADO — COMPONENTES ADICIONALES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SUB-MÓDULO 10A — DETECTOR DE RESOLUCIÓN INMINENTE:
+  < 48h → modo conservador: size *= 0.5, spread_max += 2%
+  < 4h  → NO abrir posiciones nuevas
+  < 0h  → cerrar posición activa inmediatamente
+  Telegram: "⏰ {mercado} resuelve en {N}h con posición activa"
+
+SUB-MÓDULO 10B — CORRELACIÓN ENTRE MERCADOS:
+  Si correlación entre dos posiciones propias > 0.80 → tratarlas como una
+  Si correlación histórica se rompe > 2σ → alerta de arbitraje potencial
+
+SUB-MÓDULO 10C — CALENDARIO DE EVENTOS:
+  Mantener lista configurable de eventos con hora exacta:
+    {"event": "Presidential debate", "datetime": "2024-09-10T21:00:00Z",
+     "affects_keywords": ["trump", "harris", "debate", "election"]}
+
+  Si evento relevante en < 2h: PRE_EVENT_FREEZE (no abrir nuevas posiciones)
+  Si evento en < 30min y hay posición: evaluar cierre preventivo si en profit
+  Telegram: "🗓️ Evento en {N}h: {nombre} — nuevas entradas pausadas"
+
+SUB-MÓDULO 10D — ORDER FLOW MONITOR (cada 30s):
+  Detectar órdenes grandes nuevas en el book (> config.whale_threshold, default: $2,000)
+  Registrar dirección y actualizar "whale_pressure" del mercado
+  Si whale_pressure confirma señal → boost de confianza +0.10
+  Si whale_pressure contradice señal → reducir confianza -0.15
+
+SUB-MÓDULO 10E — PERFIL DE LIQUIDEZ POR HORA:
+  Mantener histograma de spread promedio por hora UTC por mercado
+  Preferir operar en las 4 horas del día con mejor liquidez histórica
+  No bloquear completamente otras horas — solo bajar prioridad de señales
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 11: CROSS-MARKET INTELLIGENCE (divergencias vs externos)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Fuentes externas (todas con API pública gratuita):
+  Metaculus: api.metaculus.com/api2/questions/ (JSON, sin auth)
+  Manifold:  manifold.markets/api/v0/markets (JSON, sin auth)
+
+Por cada mercado activo, buscar equivalente externo:
+  if found and abs(polymarket_prob - external_prob) > 0.08:  # > 8 puntos
+    generar_señal_arbitraje(dirección = sign(external - polymarket))
+    logger.info("divergence_signal",
+      polymarket=polymarket_prob, external=external_prob,
+      source=source_name, market=market_id)
+
+UMBRAL CALIBRADO: 8% de divergencia (no 5% — muchos falsos positivos)
+Verificar: ¿los mercados externos tienen suficiente liquidez para ser informativos?
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 12: SMART EXIT MANAGER (TWAP + impact estimator)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ESTIMADOR DE IMPACTO PRE-TRADE:
+  market_impact = position_size_usd / depth_ask_5 * 100
+  if market_impact <= 1.5%: salida inmediata (market order)
+  if market_impact 1.5-3%:  TWAP 3 partes, 60s intervalo
+  if market_impact > 3%:    TWAP 5 partes, 120s intervalo
+
+LIQUIDATION PRICE ESTIMATOR (antes de abrir):
+  exit_price_est = mid_price * (1 + slippage_est)
+  if exit_price_est < breakeven_price: RECHAZAR TRADE
+  logger.info("trade_rejected_liquidity", reason="exit_worse_than_breakeven",
+              exit_est=exit_price_est, breakeven=breakeven_price)
+
+SMART LIMIT ORDERS (reducir costo de comisiones):
+  def place_smart_order(side, size, urgency):
+    if urgency == "HIGH":  # trailing stop, cerrar ya
+      return market_order()
+    # Intentar limit primero
+    limit_price = best_bid + 0.001 if side == "BUY" else best_ask - 0.001
+    order = limit_order(limit_price, size)
+    await sleep(30)
+    if not order.filled:
+      cancel(order)
+      order = limit_order(mid_price, size)  # más agresivo
+    await sleep(30)
+    if not order.filled:
+      cancel(order)
+      return market_order()  # último recurso
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 13: HEALTH MONITOR Y AUTO-RECUPERACIÓN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+HEARTBEAT (cada 30s): conexión API, loop activo, latencia, queue
+  Si latencia > 5s en 3 checks: modo degradado → pausar nuevas entradas
+
+WATCHDOG: GET /health → {"status","uptime_s","positions","latency_ms","regime"}
+  Railway health check cada 60s → auto-restart si unhealthy
+
+RECONEXIÓN INTELIGENTE:
+  1. Obtener posiciones reales desde Polymarket
+  2. Comparar con SQLite local
+  3. Resolver divergencias (posición real = fuente de verdad)
+  4. Si drift > 5% en cualquier posición → alerta inmediata, no actuar
+  5. Log de reconciliación + Telegram
+
+DETECCIÓN DE MANIPULACIÓN:
+  Stop hunting: precio toca SL exacto y rebota > 2% en 1min → log sospecha
+  Wash trading: muchas transacciones pequeñas sin movimiento de precio → reducir
+                confianza en señales de volumen de ese mercado
+  Spoofing: orden grande aparece y desaparece < 10s sin fill → ignorar esa señal
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 14: OPTIMIZADOR AUTOMÁTICO DE PARÁMETROS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Trigger: domingo 02:00 UTC (si bot lleva > 21 días activo — no 30)
+Método: grid search walk-forward, máximo 300 combinaciones
+
+RANGO DE BÚSQUEDA (no dejar que el optimizador vaya a extremos):
+  zscore_threshold:    [1.5, 2.5]   # nunca buscar fuera de este rango
+  sentiment_shift:     [0.15, 0.45]
+  ai_confidence:       [0.50, 0.80]
+  trailing_pct:        [0.02, 0.08]
+  sl_base_pct:         [0.04, 0.15]
+
+VALIDACIÓN HUMANA OBLIGATORIA:
+  Nuevos params → Paper 7 días → si mejora > 10% Sharpe → Telegram propuesta
+  Comandos: /aprobar_params | /rechazar_params
+  NUNCA aplicar en Real sin confirmación manual
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 15: SHADOW MODE (prueba paralela sin riesgo)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Correr hasta 2 bots sombra en paralelo con variantes de parámetros.
+Observan todo el flujo real pero NO ejecutan órdenes.
+Registran qué habrían hecho y calculan PnL simulado.
+
+Umbral de graduación: shadow supera al bot real en 14 días (no 21) → proponer activar.
+Dashboard: comparar shadow performance vs bot real en tiempo real.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 16: RATE LIMITING INTELIGENTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class SmartRateLimiter:
+  LIMITS = {
+    "get_orderbook": 60,   # req/min
+    "place_order":   30,
+    "get_positions": 30,
+    "get_markets":   20,
+  }
+  RESERVE = 0.20  # reservar 20% de cuota como buffer
+
+  async def call(self, endpoint: str, fn: Callable):
+    limit = self.LIMITS[endpoint] * (1 - self.RESERVE)
+    current = self.calls_this_minute.get(endpoint, 0)
+    if current >= limit:
+      await asyncio.sleep(60 / limit)
+    result = await fn()
+    self.calls_this_minute[endpoint] = current + 1
+    return result
+
+Dashboard: gráfica de uso de cuota por endpoint (últimas 24h)
+Alerta si endpoint supera 70% de cuota en < 1h
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 17: SISTEMA DE ALERTAS GRADUADAS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Nivel 1 — CRÍTICO (enviar inmediatamente, reintentar 3x si no hay respuesta):
+  🚨 Circuit breaker activado
+  🚨 Balance real < mínimo configurado
+  🚨 API key inválida o expirada
+  🚨 Stress test: pérdida simulada > 15% del capital
+
+Nivel 2 — IMPORTANTE (enviar inmediatamente, una sola vez):
+  ⚠️ Stop loss activado en posición
+  ⚠️ API degradada > 5 minutos
+  ⚠️ 3+ pérdidas consecutivas
+  ⚠️ Régimen cambiado a HIGH_VOLATILITY
+
+Nivel 3 — INFO (acumular y enviar resumen cada hora):
+  📊 Trade abierto/cerrado
+  📊 Señal generada (con contexto)
+  📊 Régimen cambiado (no HIGH_VOLATILITY)
+  📊 Parámetros optimizados disponibles
+
+Nivel 4 — DEBUG (solo en dashboard, nunca Telegram):
+  Cada llamada API, tick de precio, señal rechazada, etc.
+
+Anti-spam: misma alerta Nivel 2+ no repetir en < 15 minutos
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 18: UX/UI — DASHBOARD Y ONBOARDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PRINCIPIO: "Si el usuario necesita leer documentación, fallamos"
+
+ONBOARDING WIZARD (5 pasos, ~10 minutos total):
+  Paso 1 — Cuenta: API key, wallet, modo PAPER/REAL
+  Paso 2 — Capital/Riesgo: sliders con valores default calibrados visibles
+  Paso 3 — Mercados/Estrategias: categorías, semáforos backtesting
+  Paso 4 — IA y Noticias: Groq API key (opcional), RSS feeds activos
+  Paso 5 — Notificaciones: Telegram token, alertas por nivel
+
+PANEL NUEVO — CALIBRACIÓN (tab en dashboard):
+  "Señales del último ciclo":
+    Total señales detectadas: N
+    Rechazadas por spread: N (X%)
+    Rechazadas por z-score: N (X%)
+    Rechazadas por IA: N (X%)
+    Rechazadas por liquidez exit: N (X%)
+    → Pasaron todos los filtros: N → Ejecutadas: N
+  BOTÓN: "Ajustar umbrales" → abre formulario de calibración
+  Si rechazadas por spread > 60%: warning "Considera aumentar el spread máximo"
+
+DASHBOARD PRINCIPAL (auto-refresh 5s):
+  TOP: Estado | Modo | Balance | PnL hoy | Régimen actual | Señales hoy
+  CENTRO: Tabla posiciones activas (trailing state, botón Cerrar)
+  DERECHA: Log tiempo real + filtro por nivel
+  BOTTOM: Heat map exposición + stats de calibración del ciclo actual
+
+CONTROLES: [▶ INICIAR] [■ DETENER] [⚙ Calibrar] [📊 Historial] [📄 Exportar]
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 19: API ENDPOINTS REST (FastAPI + Pydantic)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+GET  /health                           → Railway watchdog
+GET  /api/status                       → estado detallado + régimen actual
+POST /api/start | POST /api/stop       → control del bot
+GET  /api/positions                    → posiciones abiertas + trailing state
+POST /api/positions/{id}/close         → cierre manual (trigger SmartExit)
+GET  /api/trades                       → historial con filtros
+GET  /api/metrics                      → PnL, Sharpe, MaxDD, win rate
+GET  /api/metrics/calibration          → stats de señales/rechazos del día
+GET  /api/metrics/portfolio            → exposición, correlaciones
+POST /api/config                       → actualizar config con validación
+GET  /api/backtest/{strategy}          → resultado backtesting (async)
+GET  /api/regime/{market_id}           → régimen actual del mercado
+POST /api/optimizer/approve|reject     → aprobar/rechazar nuevos params
+GET  /api/export/trades?format=csv     → exportar historial
+GET  /api/export/tax?year=2024         → reporte fiscal
+GET  /api/shadow/performance           → comparativa shadow bots vs real
+
+Seguridad: rate limiting (slowapi), BasicAuth, CORS estricto, security headers
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 20: TELEGRAM BOT (todos los comandos)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/start /stop /status /balance /posiciones /trades
+/metricas /calibracion /backtest /regimen
+/optimizacion /aprobar_params /rechazar_params
+/shadow /config /exportar /help
+
+Alertas por niveles (ver Módulo 17):
+  📈 Trade abierto | 📉 Trade cerrado | 🚨 Circuit breaker
+  ⚠️ Stop loss | ⚡ API degradada | 🔌 Reconectando
+  📊 Resumen diario | 🔬 Optimización lista
+  ⏰ Resolución inminente | 📊 Régimen cambiado
+
+Nuevo: /calibracion → envía resumen del último ciclo:
+  "Ciclo 14:30-15:30 UTC:
+   Señales detectadas: 8 | Ejecutadas: 2 | Rechazadas: 6
+   Mayor causa de rechazo: spread > 6% (4 de 6)"
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 21: PAPER MODE, REAL MODE Y SEGURIDAD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PAPER MODE (default): simular comisiones + slippage realista + latencia 50-200ms
+TRANSICIÓN A REAL: 6 pasos, escribir "CONFIRMAR MODO REAL", código Telegram
+PROTECCIONES: max drawdown diario, exposición máxima, validación balance pre-orden
+AUDIT LOG: append-only, cada acción en modo real registrada con timestamp e IP
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 22: SLIPPAGE REALISTA + ÓRDENES LIMIT INTELIGENTES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SIMULADOR DE SLIPPAGE REALISTA (paper mode):
+  Mantener distribución histórica de slippage por mercado (histograma)
+  Al simular: samplear de la distribución, NO usar valor fijo
+  Ajustar por tamaño: slippage_final *= min(2.0, size / avg_order_size)
+  Resultado: paper trading más cercano a ejecución real
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 23: TRADE JOURNAL CON IA + EXPORTACIÓN FISCAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+POST-CIERRE AUTOMÁTICO: registrar señal original, contexto, sentiment, noticias ±2h
+ANÁLISIS GROQ: 3 bullets — qué salió bien, qué mal, qué ajustar
+EXPORTACIÓN FISCAL: CSV compatible con TurboTax/Koinly
+  Campos: fecha, mercado, entrada, salida, PnL neto, comisiones, estrategia
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 24: A/B TESTING + MULTI-WALLET
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A/B TESTING: Pool A vs Pool B (50/50), mínimo 14 días o 20 trades por pool
+  Ganadora si: p-value < 0.10 Y diferencia > 8% en Sharpe (calibrado, no 0.05/10%)
+  Si no hay diferencia: mantener el más conservador
+
+MULTI-WALLET: hasta 3 wallets con estrategias y capital independientes
+  Dashboard unificado con PnL consolidado y comparación de performance
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 25: ARQUITECTURA, STACK Y DEPLOY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ESTRUCTURA:
+polymarket-bot/
+├── core/
+│   ├── engine.py          # TradingEngine + loop principal
+│   ├── state.py           # PositionManager
+│   ├── risk.py            # RiskManager: trailing, circuit breaker, anti-martingale
+│   ├── portfolio.py       # Kelly, correlaciones, exposición, stress testing
+│   ├── regime.py          # MarketRegimeDetector
+│   └── paper.py           # PaperTradingEngine con slippage realista
+├── api/
+│   ├── polymarket.py      # Cliente CLOB oficial (async, retry, rate limiting)
+│   ├── auth.py            # Autenticación L1 wallet
+│   └── orderbook.py       # Liquidez, spread, order flow
+├── intelligence/
+│   ├── news_feed.py       # RSS pipeline: feedparser async + deduplicación
+│   ├── sentiment.py       # VADER scorer (offline) + fallback a VADER
+│   ├── ai_analyzer.py     # Groq client con fallback a VADER
+│   ├── resolution.py      # Detector de resolución inminente
+│   ├── correlation.py     # Correlación entre mercados
+│   ├── event_calendar.py  # Calendario de eventos configurables
+│   ├── order_flow.py      # Detección de ballenas y manipulación
+│   └── cross_market.py    # Divergencias vs Metaculus/Manifold
+├── strategies/
+│   ├── base.py            # BaseStrategy abstracta
+│   ├── mean_reversion.py  # Z-score + sentiment
+│   ├── momentum.py        # Cambio de probabilidad + volumen
+│   ├── market_making.py   # Liquidity capture
+│   └── cross_market_arb.py
+├── backtesting/
+│   ├── data_collector.py  # Datos históricos Polymarket
+│   ├── backtester.py      # Motor + métricas completas
+│   └── walk_forward.py    # Optimización sin overfitting
+├── execution/
+│   ├── smart_exit.py      # TWAP, impact estimator, limit→market escalation
+│   └── rate_limiter.py    # SmartRateLimiter por endpoint
+├── monitoring/
+│   ├── health.py          # Heartbeat, watchdog, reconexión inteligente
+│   ├── regime_monitor.py  # Detección continua de régimen
+│   └── audit.py           # Log append-only de acciones en real mode
+├── optimizer/
+│   ├── auto_optimizer.py  # Walk-forward semanal con rangos de búsqueda
+│   └── shadow_bot.py      # ShadowBot: observar sin ejecutar
+├── dashboard/
+│   ├── main.py            # FastAPI app
+│   ├── routes/            # Todos los endpoints del Módulo 19
+│   └── templates/         # Jinja2 + Alpine.js + Chart.js
+│       └── calibration.html  # Panel de calibración (nuevo)
+├── telegram_bot/
+│   └── bot.py             # Todos los comandos + alertas graduadas
+├── journal/
+│   ├── recorder.py        # Registro automático post-trade
+│   └── ai_journal.py      # Análisis Groq post-cierre
+├── ab_test/
+│   └── ab_manager.py      # A/B testing con significancia estadística
+├── data/
+│   ├── trades.db          # SQLite: trades, posiciones, config
+│   ├── market_history.db  # SQLite: histórico para backtesting
+│   ├── slippage_dist.db   # Distribuciones históricas de slippage
+│   ├── regime_history.db  # Historial de regímenes por mercado
+│   └── audit.log          # Append-only, modo real
+├── tests/
+│   ├── test_engine.py
+│   ├── test_risk.py
+│   ├── test_strategies.py  # Incluir test de calibración: ¿genera señales?
+│   ├── test_regime.py
+│   ├── test_backtester.py
+│   └── test_smart_exit.py
+├── .env.example           # Todas las variables documentadas:
+│                          #   POLYMARKET_API_KEY, POLYMARKET_SECRET
+│                          #   WALLET_ADDRESS, TELEGRAM_BOT_TOKEN
+│                          #   GROQ_API_KEY  ← GRATIS en console.groq.com
+│                          #   GEMINI_API_KEY (opcional, backup de Groq)
+│                          #   DASHBOARD_USER, DASHBOARD_PASSWORD
+├── requirements.txt       # Con versiones fijadas
+├── Dockerfile             # Multi-stage build
+├── railway.toml
+└── README.md              # Guía en 10 pasos simples
+
+STACK TÉCNICO COMPLETO (costo total: ~$5/mes = Railway):
+  Backend:    Python 3.11+, FastAPI, asyncio, aiohttp
+  Auth:       py-clob-client, web3.py, eth-account
+  Data:       SQLite (aiosqlite), pandas, numpy, statistics
+  IA GRATIS:  vaderSentiment (offline), groq (14,400 req/día gratis)
+  Noticias:   feedparser (RSS, 100% gratis, sin API key)
+  NLP:        spaCy (entidades), scipy.stats (significancia estadística)
+  Frontend:   Jinja2, Alpine.js, Chart.js, htmx (auto-refresh)
+  Telegram:   python-telegram-bot v20+
+  Tests:      pytest, pytest-asyncio, pytest-cov (> 70% coverage)
+  Logs:       structlog (nunca print())
+  Linting:    ruff + mypy strict en módulos core
+  Deploy:     Railway + Dockerfile + GitHub Actions CI/CD
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 26: ENTREGABLES — ORDEN, ESTÁNDARES Y CALIBRACIÓN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ENTREGAR EN ESTE ORDEN:
+
+1. RESUMEN DE INVESTIGACIÓN (Módulo 1)
+   Incluir: spread promedio real en Polymarket, universo de mercados activos,
+   rate limits exactos, limitaciones del CLOB que afecten estrategias.
+   Proponer ajuste de umbrales si la investigación revela que los defaults
+   del Módulo 0 necesitan corrección basada en datos reales.
+
+2. ÁRBOL DE DIRECTORIOS COMPLETO
+
+3. CÓDIGO POR MÓDULO (en orden de dependencia):
+   a. core/engine.py + state.py
+   b. api/polymarket.py + auth.py + orderbook.py
+   c. execution/rate_limiter.py
+   d. core/risk.py (trailing, circuit breaker, anti-martingale)
+   e. core/portfolio.py (Kelly, correlaciones, stress testing)
+   f. core/regime.py (MarketRegimeDetector)
+   g. intelligence/news_feed.py (feedparser RSS, sin API key)
+   h. intelligence/sentiment.py (VADER) + intelligence/ai_analyzer.py (Groq)
+   i. intelligence/order_flow.py + cross_market.py + event_calendar.py
+   j. strategies/base.py + mean_reversion.py + momentum.py
+   k. backtesting/backtester.py + walk_forward.py
+   l. execution/smart_exit.py
+   m. optimizer/auto_optimizer.py + shadow_bot.py
+   n. monitoring/health.py + audit.py
+   o. journal/recorder.py + ai_journal.py
+   p. dashboard/main.py (con panel de calibración)
+   q. telegram_bot/bot.py (con /calibracion y alertas graduadas)
+   r. ab_test/ab_manager.py
+
+4. requirements.txt (versiones fijadas, incluir: feedparser, groq,
+   vaderSentiment, spaCy, scipy, python-telegram-bot, aiohttp, fastapi,
+   sqlalchemy, aiosqlite, structlog, ruff)
+
+5. .env.example (GROQ_API_KEY documentado como "gratis en console.groq.com")
+
+6. railway.toml + Dockerfile (multi-stage)
+
+7. README.md — Guía en 10 pasos:
+   Paso 1: Clonar repo
+   Paso 2: Crear cuenta Groq gratis (console.groq.com) → copiar API key
+   Paso 3: Configurar .env con API keys de Polymarket + Groq + Telegram
+   Paso 4: Railway → conectar repo → deploy (1 clic)
+   Paso 5: Abrir dashboard → completar wizard de configuración
+   Paso 6: Revisar panel de Calibración — ¿el bot encuentra señales?
+   Paso 7: Si 0 señales en 24h → reducir umbrales desde "Ajustar umbrales"
+   Paso 8: Probar mínimo 7 días en Paper con al menos 10 trades
+   Paso 9: Revisar backtesting de cada estrategia (semáforos)
+   Paso 10: Cuando estés cómodo → activar modo Real con capital pequeño
+
+ESTÁNDARES DE CÓDIGO:
+  • Type hints completos en todas las funciones
+  • Docstrings Google style en clases y métodos públicos
+  • structlog en lugar de print() o logging básico
+  • Nunca bare except: — siempre except SpecificException as e:
+  • Tests unitarios para: engine, risk, strategies, backtester, regime detector
+  • Test específico de calibración: test_calibration.py
+    → Dado un conjunto de 50 mercados simulados, el bot debe generar
+       entre 1 y 8 señales por día con los umbrales default del Módulo 0.
+       Si genera 0 o > 15: FAIL — los umbrales están mal calibrados.
+
+SI ALGO NO ES IMPLEMENTABLE CON LA API ACTUAL:
+  ⚠️ LIMITACIÓN REAL: [descripción]
+  💡 ALTERNATIVA: [workaround concreto]
+  🗺️ ROADMAP: [implementación futura si la API mejora]
+
+CALIBRACIÓN FINAL — VALIDAR ANTES DE ENTREGAR:
+  Con los valores default del Módulo 0, simular el bot sobre datos históricos
+  de los últimos 30 días de Polymarket y verificar:
+  → Se generan entre 30-120 señales totales (1-4 por día)
+  → Entre el 30-60% pasan todos los filtros y se ejecutan
+  → Si no cumple: ajustar umbrales y documentar el ajuste con su justificación
+
+================================================================
+FIN — MASTER PROMPT v5.0 ULTIMATE
+26 módulos | IA 100% gratuita | RSS sin API | Calibrado 2-4 trades/día
+Costo operativo: ~$5/mes (solo Railway)
+================================================================
