@@ -1,8 +1,16 @@
 """Trading engine — main orchestrator.
 
 Runs concurrent async loops for market scanning, position management,
-and data collection. Processes signals through the full pipeline:
-strategy → risk checks → liquidity filter → execution.
+data collection, news feed, and health monitoring.
+
+Phase 2 additions:
+  - Market regime detection (Module 10)
+  - News feed pipeline integration (Module 9)
+  - Momentum strategy (Module 11)
+  - Resolution imminence checks (Module 12A)
+  - Event calendar checks (Module 12C)
+  - Health monitor with degradation chain (Module 13)
+  - Telegram alerts (Module 14)
 """
 
 from __future__ import annotations
@@ -18,10 +26,16 @@ from api.data_collector import DataCollector
 from api.polymarket import MarketData, PolymarketClient
 from config import settings
 from core.paper import PaperTradingEngine
+from core.regime import MarketRegime, MarketRegimeDetector
 from core.risk import RiskManager
 from core.state import Position, PositionManager, TrailingState
+from intelligence.event_calendar import EventCalendar
+from intelligence.news_feed import MarketKeywords, NewsFeedPipeline, NewsSignal
+from intelligence.resolution import ResolutionDetector
+from monitoring.health import DegradationLevel, HealthMonitor
 from strategies.base import BaseStrategy, MarketContext, Signal
 from strategies.mean_reversion import MeanReversionStrategy
+from telegram_bot.bot import AlertLevel, TelegramAlertBot
 
 logger = structlog.get_logger(__name__)
 
@@ -29,10 +43,13 @@ logger = structlog.get_logger(__name__)
 class TradingEngine:
     """Main trading engine orchestrating all bot components.
 
-    Runs three concurrent async loops:
+    Runs concurrent async loops:
         1. Market scanning (every scan_interval_seconds)
         2. Position management (every position_check_interval_seconds)
         3. Data collection (delegated to DataCollector)
+        4. News feed polling (every 60s) — Phase 2
+        5. Health monitoring heartbeat (every 30s) — Phase 2
+        6. Telegram info flush (every hour) — Phase 2
     """
 
     def __init__(
@@ -43,6 +60,11 @@ class TradingEngine:
         strategies: list[BaseStrategy],
         paper_engine: PaperTradingEngine,
         data_collector: DataCollector,
+        regime_detector: MarketRegimeDetector | None = None,
+        news_feed: NewsFeedPipeline | None = None,
+        health_monitor: HealthMonitor | None = None,
+        telegram_bot: TelegramAlertBot | None = None,
+        event_calendar: EventCalendar | None = None,
     ) -> None:
         self._client = client
         self._state = state
@@ -50,6 +72,11 @@ class TradingEngine:
         self._strategies = strategies
         self._paper = paper_engine
         self._collector = data_collector
+        self._regime = regime_detector or MarketRegimeDetector()
+        self._news_feed = news_feed
+        self._health = health_monitor
+        self._telegram = telegram_bot
+        self._event_calendar = event_calendar
 
         self._running = False
         self._degraded = False
@@ -87,18 +114,36 @@ class TradingEngine:
             asyncio.create_task(self._collector.run_collection_loop(), name="data_collection"),
         ]
 
+        # Phase 2: additional loops
+        if self._news_feed:
+            tasks.append(asyncio.create_task(self._news_feed.start(), name="news_feed"))
+        if self._health:
+            tasks.append(asyncio.create_task(self._health.run_heartbeat_loop(), name="health_monitor"))
+        if self._telegram:
+            tasks.append(asyncio.create_task(self._telegram.run_info_flush_loop(), name="telegram_flush"))
+
         try:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
             logger.info("engine_stopped")
         except Exception as exc:
             logger.error("engine_fatal_error", error=str(exc))
+            if self._telegram:
+                await self._telegram.send_alert(
+                    AlertLevel.CRITICAL, f"Engine fatal error: {exc}"
+                )
             raise
 
     async def stop(self) -> None:
         """Signal all loops to stop."""
         self._running = False
         self._collector._running = False
+        if self._news_feed:
+            await self._news_feed.stop()
+        if self._health:
+            await self._health.stop()
+        if self._telegram:
+            await self._telegram.stop()
         logger.info("engine_stop_requested")
 
     # ── Market Scanning Loop ──────────────────────────────────
@@ -109,16 +154,29 @@ class TradingEngine:
             try:
                 await self._process_cancellations()
                 await self._scan_and_trade()
+                # Process news feed signals
+                if self._news_feed:
+                    await self._process_news_signals()
             except Exception as exc:
                 logger.error("scan_loop_error", error=str(exc))
             await asyncio.sleep(settings.scan_interval_seconds)
 
     async def _scan_and_trade(self) -> None:
         """Fetch markets, run strategies, process signals."""
+        # Check health monitor degradation
+        if self._health and not self._health.can_open_new:
+            logger.warning(
+                "scan_blocked_degradation",
+                level=self._health.degradation_level.value,
+            )
+            return
+
         # Check API latency first
         latency = await self._client.check_latency()
         if latency > settings.api_latency_max_seconds:
             self._degraded = True
+            if self._health:
+                self._health.report_component_status("api", False)
             logger.warning(
                 "degraded_mode",
                 latency_s=round(latency, 2),
@@ -126,6 +184,8 @@ class TradingEngine:
             )
             return
         self._degraded = False
+        if self._health:
+            self._health.report_component_status("api", True)
 
         # Get balance and check minimum capital
         balance = await self._client.get_balance()
@@ -135,17 +195,33 @@ class TradingEngine:
                 balance=balance,
                 min_required=settings.min_capital_usd,
             )
+            if self._telegram:
+                await self._telegram.send_alert(
+                    AlertLevel.CRITICAL,
+                    f"Balance ${balance:.2f} below minimum ${settings.min_capital_usd}",
+                    key="low_balance",
+                )
             return
 
         # Check circuit breaker
         daily_pnl = await self._state.get_daily_pnl()
         if self._risk.check_circuit_breaker(daily_pnl.total_pnl, balance):
+            if self._telegram:
+                await self._telegram.send_alert(
+                    AlertLevel.CRITICAL,
+                    f"Circuit breaker triggered: PnL ${daily_pnl.total_pnl:.2f}",
+                    key="circuit_breaker",
+                )
             return  # Circuit breaker already logs
 
         # Fetch markets
         self._markets_cache = await self._client.get_active_markets()
         if not self._markets_cache:
             return
+
+        # Update news feed market keywords
+        if self._news_feed:
+            self._update_news_feed_markets()
 
         # Build portfolio state
         portfolio = await self._state.get_portfolio_state(balance)
@@ -157,7 +233,21 @@ class TradingEngine:
                 reason="anti_martingale_5_consecutive_losses",
                 consecutive_losses=portfolio.consecutive_losses,
             )
+            if self._telegram and portfolio.consecutive_losses == 5:
+                await self._telegram.send_alert(
+                    AlertLevel.IMPORTANT,
+                    f"Trading paused: {portfolio.consecutive_losses} consecutive losses",
+                    key="anti_martingale",
+                )
             return
+
+        # Alert on 3+ consecutive losses
+        if portfolio.consecutive_losses >= 3 and self._telegram:
+            await self._telegram.send_alert(
+                AlertLevel.IMPORTANT,
+                f"{portfolio.consecutive_losses} consecutive losses",
+                key="consecutive_losses",
+            )
 
         # Evaluate each market with each strategy
         for market in self._markets_cache:
@@ -165,12 +255,44 @@ class TradingEngine:
             if await self._state.has_active_position(market.market_id):
                 continue
 
+            # Phase 2: Check resolution imminence (Module 12A)
+            if self._risk.resolution_detector.should_block_new_positions(market.end_date):
+                logger.debug("scan_blocked_resolution", market_id=market.market_id)
+                continue
+
+            # Phase 2: Check event calendar (Module 12C)
+            if self._event_calendar:
+                market_kws = NewsFeedPipeline.extract_keywords(market.question)
+                if self._event_calendar.should_block_new_position(market_kws):
+                    logger.debug("scan_blocked_event", market_id=market.market_id)
+                    continue
+
             # Get historical data for z-score
             history = await self._collector.get_probability_series(
                 market.market_id, days=7
             )
 
+            # Phase 2: Detect regime (Module 10)
+            if self._regime.should_check(market.market_id):
+                self._regime.detect_regime(market.market_id, history)
+
+            regime = self._regime.get_regime(market.market_id)
+
             for strategy in self._strategies:
+                # Skip momentum in non-trending regimes (handled internally too)
+                # Skip mean_reversion in trending regimes when regime is active
+                if strategy.name == "mean_reversion" and regime in (
+                    MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN
+                ):
+                    continue
+                if strategy.name == "momentum" and regime not in (
+                    MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN
+                ):
+                    continue
+                # HIGH_VOLATILITY: don't open new positions
+                if regime == MarketRegime.HIGH_VOLATILITY:
+                    continue
+
                 context = MarketContext(
                     market=market,
                     probability_history=history,
@@ -179,9 +301,45 @@ class TradingEngine:
 
                 signal = await strategy.generate_signal(context)
                 if signal is not None:
-                    await self._process_signal(signal, portfolio)
+                    await self._process_signal(signal, portfolio, regime)
 
-    async def _process_signal(self, signal: Signal, portfolio: Any) -> None:
+    async def _process_news_signals(self) -> None:
+        """Process signals generated by the news feed pipeline."""
+        if not self._news_feed:
+            return
+
+        signals = self._news_feed.drain_signals()
+        if not signals:
+            return
+
+        balance = await self._client.get_balance()
+        portfolio = await self._state.get_portfolio_state(balance)
+
+        for news_signal in signals:
+            if await self._state.has_active_position(news_signal.market_id):
+                continue
+
+            # Convert NewsSignal to a trading Signal
+            direction = "BUY" if news_signal.direction == "UP" else "SELL"
+            signal = Signal(
+                market_id=news_signal.market_id,
+                condition_id=news_signal.condition_id,
+                token_id=news_signal.token_id,
+                direction=direction,
+                strength=news_signal.confidence,
+                strategy="news_sentiment",
+                category=news_signal.category,
+                sentiment_score=news_signal.vader_score,
+                ai_confidence=news_signal.confidence,
+                metadata={"headline": news_signal.headline[:100], "source": news_signal.source},
+            )
+
+            regime = self._regime.get_regime(news_signal.market_id)
+            await self._process_signal(signal, portfolio, regime)
+
+    async def _process_signal(
+        self, signal: Signal, portfolio: Any, regime: MarketRegime = MarketRegime.RANGING
+    ) -> None:
         """Process a signal through risk checks and execute if valid."""
         # Dedup check (belt and suspenders)
         if await self._state.has_active_position(signal.market_id):
@@ -201,6 +359,27 @@ class TradingEngine:
                 market_id=signal.market_id,
                 reason="zero_size_from_risk",
             )
+            return
+
+        # Phase 2: Apply regime adjustment (HIGH_VOLATILITY = 50% reduction)
+        size_usd = self._risk.apply_regime_adjustment(size_usd, regime.value)
+        if size_usd <= 0:
+            return
+
+        # Phase 2: Apply resolution size multiplier (Module 12A)
+        market_data = self._find_market(signal.market_id)
+        if market_data:
+            res_multiplier, block = self._risk.check_resolution_risk(market_data.end_date)
+            if block:
+                logger.info("signal_rejected_resolution", market_id=signal.market_id)
+                return
+            size_usd *= res_multiplier
+
+        # Phase 2: Check correlation exposure (Module 12B)
+        passes, reason = self._risk.check_correlation_risk(
+            signal.market_id, size_usd, portfolio
+        )
+        if not passes:
             return
 
         # Liquidity check
@@ -252,6 +431,11 @@ class TradingEngine:
                 fill_price=round(fill.fill_price, 4),
                 strategy=signal.strategy,
             )
+            if self._telegram:
+                await self._telegram.send_alert(
+                    AlertLevel.INFO,
+                    f"Trade opened: {signal.direction} ${size_usd:.0f} on {signal.market_id[:20]} ({signal.strategy})",
+                )
         else:
             # Real mode — place limit order at orderbook mid price
             if orderbook and orderbook.mid_price > 0:
@@ -338,6 +522,29 @@ class TradingEngine:
 
         await self._state.update_position_price(position.id, current_price)  # type: ignore[arg-type]
 
+        # Phase 2: Check resolution imminence — close immediately if past due
+        market_data = self._find_market(position.market_id)
+        if market_data and self._risk.resolution_detector.should_close_immediately(market_data.end_date):
+            alert_msg = self._risk.resolution_detector.check_position_alert(
+                position.market_id, market_data.end_date
+            )
+            if alert_msg and self._telegram:
+                await self._telegram.send_alert(AlertLevel.CRITICAL, alert_msg, key=f"resolution_{position.market_id}")
+            await self._close_position(position, current_price, "resolution_imminent", orderbook)
+            return
+
+        # Phase 2: Event calendar — evaluate preventive close
+        if self._event_calendar and market_data:
+            market_kws = NewsFeedPipeline.extract_keywords(market_data.question)
+            if self._event_calendar.should_evaluate_close(market_kws):
+                # Close if in profit
+                if position.direction == "BUY" and current_price > position.entry_price:
+                    await self._close_position(position, current_price, "event_preventive_close", orderbook)
+                    return
+                elif position.direction == "SELL" and current_price < position.entry_price:
+                    await self._close_position(position, current_price, "event_preventive_close", orderbook)
+                    return
+
         # Update trailing stop
         new_state, new_sl = self._risk.update_trailing_stop(position, current_price)
         if new_state != position.trailing_state or new_sl != position.stop_loss:
@@ -346,6 +553,12 @@ class TradingEngine:
         # Check if trailing stop triggers close
         if new_state == TrailingState.CLOSING:
             await self._close_position(position, current_price, "trailing_stop", orderbook)
+            if self._telegram:
+                await self._telegram.send_alert(
+                    AlertLevel.IMPORTANT,
+                    f"Stop loss triggered: {position.market_id[:20]} @ {current_price:.4f}",
+                    key=f"stop_{position.id}",
+                )
             return
 
         # Check mean reversion exit (z-score back to normal)
@@ -358,6 +571,19 @@ class TradingEngine:
                 await self._close_position(
                     position, current_price, "mean_reversion_exit", orderbook
                 )
+
+        # Phase 2: Check momentum exit
+        elif position.strategy == "momentum":
+            history = await self._collector.get_probability_series(
+                position.market_id, days=1
+            )
+            if len(history) >= 12:
+                change_1h = current_price - history[-12]
+                from strategies.momentum import MomentumStrategy
+                if MomentumStrategy.check_exit_conditions(change_1h):
+                    await self._close_position(
+                        position, current_price, "momentum_exit", orderbook
+                    )
 
     async def _close_position(
         self,
@@ -394,6 +620,12 @@ class TradingEngine:
                 f"position={position.id} reason={exit_reason} price={current_price}",
             )
 
+        if self._telegram:
+            await self._telegram.send_alert(
+                AlertLevel.INFO,
+                f"Position closed: {position.market_id[:20]} reason={exit_reason} @ {current_price:.4f}",
+            )
+
     # ── Priority Queue for Cancellations ──────────────────────
 
     async def request_cancellation(self, order_id: str) -> None:
@@ -409,6 +641,37 @@ class TradingEngine:
             except Exception as exc:
                 logger.error("cancellation_failed", error=str(exc))
 
+    # ── Helpers ───────────────────────────────────────────────
+
+    def _find_market(self, market_id: str) -> MarketData | None:
+        """Find a market in the current cache."""
+        for m in self._markets_cache:
+            if m.market_id == market_id:
+                return m
+        return None
+
+    def _update_news_feed_markets(self) -> None:
+        """Update news feed with current market keywords."""
+        if not self._news_feed:
+            return
+
+        market_kws = []
+        for m in self._markets_cache:
+            keywords = NewsFeedPipeline.extract_keywords(m.question)
+            if keywords:
+                market_kws.append(
+                    MarketKeywords(
+                        market_id=m.market_id,
+                        question=m.question,
+                        keywords=keywords,
+                        category=m.category,
+                        probability=m.probability,
+                        token_id=m.token_ids[0] if m.token_ids else "",
+                        condition_id=m.condition_id,
+                    )
+                )
+        self._news_feed.register_markets(market_kws)
+
     # ── Status ────────────────────────────────────────────────
 
     async def get_status(self) -> dict:
@@ -417,7 +680,7 @@ class TradingEngine:
         daily_pnl = await self._state.get_daily_pnl()
         now = datetime.now(timezone.utc).isoformat()
 
-        return {
+        status = {
             "status": "running" if self._running else "stopped",
             "mode": "paper" if settings.paper_mode else "real",
             "degraded": self._degraded,
@@ -428,3 +691,9 @@ class TradingEngine:
             "markets_monitored": len(self._markets_cache),
             "timestamp": now,
         }
+
+        # Phase 2: add health info
+        if self._health:
+            status["health"] = self._health.get_status()
+
+        return status

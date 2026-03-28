@@ -1,6 +1,7 @@
 """FastAPI entry point for the Polymarket Trading Bot.
 
 Provides a /health endpoint and starts the trading engine as a background task.
+Phase 2: integrates regime detector, news feed, health monitor, telegram, event calendar.
 """
 
 from __future__ import annotations
@@ -18,10 +19,16 @@ from api.polymarket import PolymarketClient
 from config import settings
 from core.engine import TradingEngine
 from core.paper import PaperTradingEngine
+from core.regime import MarketRegimeDetector
 from core.risk import RiskManager
 from core.state import PositionManager
 from intelligence.ai_analyzer import AIAnalyzer
+from intelligence.event_calendar import CalendarEvent, EventCalendar
+from intelligence.news_feed import NewsFeedPipeline
+from monitoring.health import HealthMonitor
 from strategies.mean_reversion import MeanReversionStrategy
+from strategies.momentum import MomentumStrategy
+from telegram_bot.bot import TelegramAlertBot
 
 # ── Logging Setup ──────────────────────────────────────────────
 
@@ -56,7 +63,7 @@ async def lifespan(app: FastAPI):
     logger.info(
         "bot_starting",
         mode="paper" if settings.paper_mode else "real",
-        version="1.0.0",
+        version="2.0.0",
     )
 
     # Initialize components
@@ -76,7 +83,41 @@ async def lifespan(app: FastAPI):
     risk = RiskManager()
     ai = AIAnalyzer()
     paper = PaperTradingEngine(state)
-    strategies = [MeanReversionStrategy(ai_analyzer=ai)]
+
+    # Phase 2 components
+    regime_detector = MarketRegimeDetector()
+    news_feed = NewsFeedPipeline(ai_analyzer=ai, feeds=settings.rss_feeds)
+    telegram_bot = TelegramAlertBot()
+    event_calendar = EventCalendar()
+
+    # Load configured events
+    for evt_dict in settings.event_calendar:
+        try:
+            event_calendar.add_event(CalendarEvent(
+                name=evt_dict.get("name", ""),
+                timestamp=evt_dict.get("timestamp", ""),
+                keywords=evt_dict.get("keywords", []),
+                category=evt_dict.get("category", "other"),
+                impact=evt_dict.get("impact", "medium"),
+            ))
+        except Exception:
+            pass
+
+    health_monitor = HealthMonitor(client, state) if client else None  # type: ignore[arg-type]
+
+    # Strategies: mean reversion + momentum
+    strategies = [
+        MeanReversionStrategy(ai_analyzer=ai),
+        MomentumStrategy(regime_detector=regime_detector),
+    ]
+
+    # Set up telegram callbacks
+    if client:
+        telegram_bot.set_callbacks(
+            status_cb=lambda: engine.get_status() if engine else {},
+            balance_cb=lambda: client.get_balance(),
+            positions_cb=lambda: state.get_active_positions(),
+        )
 
     if client:
         engine = TradingEngine(
@@ -86,7 +127,19 @@ async def lifespan(app: FastAPI):
             strategies=strategies,
             paper_engine=paper,
             data_collector=collector,
+            regime_detector=regime_detector,
+            news_feed=news_feed,
+            health_monitor=health_monitor,
+            telegram_bot=telegram_bot,
+            event_calendar=event_calendar,
         )
+
+        # Phase 2: Reconcile on restart (Module 13)
+        if health_monitor and not settings.paper_mode:
+            alerts = await health_monitor.reconcile_on_restart()
+            for alert in alerts:
+                logger.warning("reconcile_alert", msg=alert)
+
         engine_task = asyncio.create_task(engine.start())
         logger.info("engine_started")
     else:
@@ -109,7 +162,7 @@ async def lifespan(app: FastAPI):
     logger.info("bot_shutdown_complete")
 
 
-app = FastAPI(title="Polymarket Trading Bot", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Polymarket Trading Bot", version="2.0.0", lifespan=lifespan)
 
 
 @app.get("/health")
