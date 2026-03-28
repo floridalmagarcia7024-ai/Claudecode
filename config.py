@@ -47,6 +47,29 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
+    # ── Phase 2: RSS Feeds (Module 9) ────────────────────────
+    rss_feeds: dict[str, list[str]] = Field(default={
+        "politics": [
+            "https://feeds.reuters.com/Reuters/PoliticsNews",
+            "https://rss.politico.com/politico.xml",
+            "https://thehill.com/rss/syndicator/19109",
+        ],
+        "crypto": [
+            "https://www.coindesk.com/arc/outboundfeeds/rss",
+            "https://cointelegraph.com/rss",
+        ],
+        "general": [
+            "https://feeds.bbci.co.uk/news/world/rss.xml",
+            "https://feeds.reuters.com/reuters/topNews",
+        ],
+        "sports": [
+            "https://www.espn.com/espn/rss/news",
+        ],
+    })
+
+    # ── Phase 2: Event Calendar (Module 12C) ──────────────────
+    event_calendar: list[dict] = Field(default=[])
+
     # ── Operational ────────────────────────────────────────────
     paper_mode: bool = True
     scan_interval_seconds: int = 60

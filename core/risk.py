@@ -10,6 +10,8 @@ import structlog
 from api.polymarket import OrderBook
 from config import settings
 from core.state import Position, PortfolioState, TrailingState
+from intelligence.correlation import CorrelationTracker
+from intelligence.resolution import ResolutionDetector, ResolutionUrgency
 
 logger = structlog.get_logger(__name__)
 
@@ -23,7 +25,17 @@ CATEGORY_LIMITS: dict[str, float] = {
 
 
 class RiskManager:
-    """Centralized risk management for the trading bot."""
+    """Centralized risk management for the trading bot.
+
+    Phase 2 additions:
+      - Resolution imminence checks (Module 12A)
+      - Correlation-based exposure limits (Module 12B)
+      - HIGH_VOLATILITY regime size reduction
+    """
+
+    def __init__(self) -> None:
+        self.resolution_detector = ResolutionDetector()
+        self.correlation_tracker = CorrelationTracker()
 
     # ── Trailing Stop State Machine ────────────────────────────
     #
@@ -333,6 +345,73 @@ class RiskManager:
             return False, reason
 
         return True, ""
+
+    # ── Phase 2: Resolution & Correlation Checks ────────────────
+
+    def check_resolution_risk(self, end_date: str) -> tuple[float, bool]:
+        """Check resolution imminence and return (size_multiplier, should_block).
+
+        Returns:
+            Tuple of (size_multiplier, should_block_new_positions).
+        """
+        multiplier = self.resolution_detector.size_multiplier(end_date)
+        block = self.resolution_detector.should_block_new_positions(end_date)
+
+        if block:
+            logger.info(
+                "resolution_blocks_trade",
+                hours_until=self.resolution_detector.hours_until_resolution(end_date),
+            )
+        elif multiplier < 1.0:
+            logger.info(
+                "resolution_conservative_mode",
+                size_multiplier=multiplier,
+                hours_until=self.resolution_detector.hours_until_resolution(end_date),
+            )
+
+        return multiplier, block
+
+    def check_correlation_risk(
+        self, market_id: str, size_usd: float, portfolio: PortfolioState
+    ) -> tuple[bool, str]:
+        """Check if adding a position would exceed correlated exposure limits.
+
+        Returns:
+            Tuple of (passes, rejection_reason).
+        """
+        active_dicts = [
+            {"market_id": p.market_id, "size_usd": p.size_usd}
+            for p in portfolio.active_positions
+        ]
+        passes = self.correlation_tracker.check_correlated_exposure_limit(
+            market_id, size_usd, active_dicts, portfolio.capital
+        )
+        if not passes:
+            reason = f"correlated_exposure_exceeded: market {market_id}"
+            logger.info("signal_rejected_correlation", market_id=market_id, reason=reason)
+            return False, reason
+        return True, ""
+
+    def apply_regime_adjustment(self, size: float, regime: str) -> float:
+        """Reduce position size for HIGH_VOLATILITY regime.
+
+        Args:
+            size: Base position size.
+            regime: Current market regime value.
+
+        Returns:
+            Adjusted size (50% reduction in high volatility).
+        """
+        if regime == "high_volatility":
+            adjusted = size * 0.5
+            logger.info(
+                "regime_size_reduction",
+                original=round(size, 2),
+                adjusted=round(adjusted, 2),
+                regime=regime,
+            )
+            return adjusted
+        return size
 
     # ── Internal ───────────────────────────────────────────────
 
