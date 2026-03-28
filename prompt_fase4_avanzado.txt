@@ -1,0 +1,203 @@
+================================================================
+POLYMARKET TRADING BOT — FASE 4: FEATURES AVANZADOS
+================================================================
+Prerrequisito: Fases 1-3 completadas, estables, y con mínimo 21 días
+de datos recolectados + paper trading validado.
+IMPORTANTE: Solo implementar esta fase si las anteriores están estables.
+================================================================
+
+CONTEXTO: Las Fases 1-3 dejaron el bot con:
+  - Motor core completo con trailing, circuit breaker, anti-martingale
+  - Estrategias: mean reversion + momentum
+  - RSS + VADER + Groq | Régimen detector | Resolución inminente
+  - Health monitor + reconexión + degradación en cadena
+  - Dashboard web con JWT + onboarding + calibración
+  - API REST completa | Telegram completo
+  - Backtesting walk-forward | Smart exit (TWAP)
+  - Trade journal con análisis IA
+  - DataCollector con 21+ días de datos
+
+UMBRALES: Usar los vigentes de las fases anteriores (pueden haber sido
+ajustados durante paper trading).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 21: OPTIMIZADOR AUTOMÁTICO DE PARÁMETROS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Trigger: domingo 02:00 UTC (si bot lleva > 21 días activo)
+Método: grid search walk-forward, máximo 300 combinaciones
+
+RANGO DE BÚSQUEDA (acotado para evitar extremos):
+  zscore_threshold:    [1.5, 2.5]
+  sentiment_shift:     [0.15, 0.45]
+  ai_confidence:       [0.50, 0.80]
+  trailing_pct:        [0.03, 0.10]
+  sl_base_pct:         [0.04, 0.15]
+
+VALIDACIÓN HUMANA OBLIGATORIA:
+  Nuevos params → Paper 7 días → si mejora > 10% Sharpe → propuesta vía Telegram
+  Comandos: /aprobar_params | /rechazar_params
+  NUNCA aplicar en Real sin confirmación manual
+
+Endpoint: POST /api/optimizer/approve | POST /api/optimizer/reject
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 22: SHADOW MODE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Hasta 2 bots sombra en paralelo con variantes de parámetros.
+Observan el flujo real pero NO ejecutan órdenes.
+Registran qué habrían hecho y calculan PnL simulado.
+
+Graduación: shadow supera al bot real en 14 días → proponer activar vía Telegram
+Dashboard: comparar shadow vs real en gráfica de performance
+
+Endpoint: GET /api/shadow/performance
+
+NOTA DE RECURSOS: En Railway ($5/mes) los recursos son limitados.
+Shadow bots deben ser ligeros — reusar datos ya recolectados, no
+hacer llamadas API adicionales. Solo ejecutar la lógica de decisión
+sobre los mismos datos que el bot principal ya consumió.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 23: STRESS TESTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Correr diariamente a las 00:00 UTC (asyncio.create_task, no bloquear loop).
+
+ESCENARIOS:
+  1. Flash crash: todas las posiciones -15% simultáneamente
+  2. Correlación colapsa: posiciones correlacionadas en dirección opuesta
+  3. Liquidez seca: spread de todos los mercados sube a máximo histórico
+  4. Cisne negro: 1 posición pierde 100% (mercado resuelve contra el bot)
+  5. API muerta 4h: simular qué habría pasado sin poder gestionar
+
+Para cada escenario: PnL simulado, ¿activa circuit breaker?, daño máximo.
+Si pérdida > 15% del capital → alerta Telegram inmediata.
+Mostrar en dashboard en sección "Salud del portafolio".
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 24: CROSS-MARKET INTELLIGENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Fuentes externas (APIs públicas gratuitas):
+  Metaculus: api.metaculus.com/api2/questions/ (JSON, sin auth)
+  Manifold:  manifold.markets/api/v0/markets (JSON, sin auth)
+
+(NO incluir PredictIt — cerrado a nuevos traders, liquidez insuficiente)
+
+Para cada mercado activo, buscar equivalente externo por keywords:
+  Si abs(polymarket_prob - external_prob) > 0.08 (8 puntos):
+    Generar señal de divergencia
+    Verificar que el mercado externo tiene suficiente liquidez para ser informativo
+
+LIMITACIÓN REAL: El matching semántico entre preguntas de diferentes
+plataformas es un problema de NLP no trivial. Las preguntas pueden
+estar formuladas de forma diferente. Usar matching por keywords como
+primera aproximación, no asumir que es perfecto.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 25: INTELIGENCIA ADICIONAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SUB-MÓDULO 25A — ORDER FLOW MONITOR (cada 30s):
+  Detectar órdenes grandes nuevas (> $2,000) en el order book
+  Registrar dirección → "whale_pressure"
+  Si whale_pressure confirma señal → boost confianza +0.10
+  Si contradice → reducir confianza -0.15
+
+SUB-MÓDULO 25B — PERFIL DE LIQUIDEZ POR HORA:
+  Histograma de spread promedio por hora UTC por mercado
+  Preferir operar en las 4 horas del día con mejor liquidez
+  No bloquear otras horas — solo bajar prioridad
+
+SUB-MÓDULO 25C — DETECCIÓN DE MANIPULACIÓN:
+  Stop hunting: precio toca SL exacto y rebota > 2% en 1min → log sospecha
+  Wash trading: muchas transacciones sin movimiento real → reducir confianza volumen
+  Spoofing: orden grande aparece y desaparece < 10s → ignorar señal
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÓDULO 26: A/B TESTING + MULTI-WALLET (opcional)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+NOTA: Este módulo requiere capital suficiente para dividir en pools
+estadísticamente significativos. Solo implementar si el usuario tiene
+capital > $1,000 y quiere experimentar con variantes.
+
+A/B TESTING:
+  Pool A vs Pool B (50/50), mínimo 14 días o 20 trades por pool
+  Ganadora si: p-value < 0.10 Y diferencia > 8% en Sharpe
+  Si no hay diferencia clara: mantener el más conservador
+
+MULTI-WALLET: hasta 3 wallets con estrategias independientes
+  Dashboard unificado con PnL consolidado y comparativa
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NUEVOS ARCHIVOS A CREAR EN FASE 4
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+optimizer/
+├── auto_optimizer.py  # Walk-forward semanal con rangos acotados
+└── shadow_bot.py      # ShadowBot ligero (reusar datos existentes)
+
+intelligence/
+├── cross_market.py    # Divergencias vs Metaculus/Manifold
+├── order_flow.py      # Detección de ballenas y manipulación
+└── liquidity_profile.py  # Perfil horario de liquidez
+
+core/
+└── stress_test.py     # 5 escenarios diarios
+
+ab_test/
+└── ab_manager.py      # A/B testing + multi-wallet (opcional)
+
+monitoring/
+└── audit.py           # Log append-only completo para modo real
+
+tests/
+├── test_optimizer.py
+├── test_shadow.py
+├── test_stress.py
+└── test_cross_market.py
+
+MODIFICAR:
+  - dashboard/routes/ → añadir endpoints nuevos (shadow, optimizer, stress)
+  - telegram_bot/bot.py → añadir /optimizacion /aprobar_params /rechazar_params /shadow
+  - core/engine.py → integrar order flow, cross-market, stress testing
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENTREGABLES FASE 4
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Optimizador automático con validación humana
+2. Shadow mode (ligero, sin API calls extra)
+3. Stress testing diario con 5 escenarios
+4. Cross-market intelligence (Metaculus + Manifold)
+5. Order flow monitor + detección de manipulación
+6. A/B testing (opcional, si hay capital suficiente)
+7. Audit log completo para modo real
+8. Tests para cada módulo nuevo
+9. requirements.txt actualizado (añadir scipy si no estaba)
+
+VERIFICACIÓN FINAL DEL SISTEMA COMPLETO:
+  Con todas las fases integradas, verificar en paper mode durante 7 días:
+  → Se generan entre 1-8 señales/día
+  → Entre 30-60% pasan todos los filtros
+  → Dashboard muestra datos actualizados en tiempo real
+  → Telegram envía alertas correctamente por nivel
+  → Reconexión funciona tras simular restart
+  → Si algo falla: documentar la limitación y el workaround
+
+================================================================
+FIN — FASE 4: FEATURES AVANZADOS
+Sistema completo: 4 fases | IA 100% gratuita | RSS sin API
+Costo operativo: ~$5/mes (solo Railway)
+================================================================
