@@ -312,7 +312,7 @@ async def lifespan(app: FastAPI):
 
         telegram_bot.set_callbacks(
             status_cb=lambda: engine.get_status() if engine else {},
-            balance_cb=lambda: client.get_balance(),
+            balance_cb=lambda: engine._get_balance() if engine else 0.0,
             positions_cb=_get_positions_dict,
             trades_cb=_get_trades,
             metrics_cb=_get_metrics,
