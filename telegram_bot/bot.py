@@ -11,6 +11,8 @@ Anti-spam: same alert not repeated within 15 minutes.
 Phase 2 commands: /status /balance /posiciones /help
 Phase 3 commands: /start /stop /trades /metricas /calibracion
                   /backtest /regimen /config /exportar
+Phase 4 commands: /optimizacion /aprobar_params /rechazar_params /shadow
+                  /stress /divergencias
 """
 
 from __future__ import annotations
@@ -94,6 +96,13 @@ class TelegramAlertBot:
         export_cb=None,
         start_cb=None,
         stop_cb=None,
+        # Phase 4 callbacks
+        optimizer_cb=None,
+        approve_params_cb=None,
+        reject_params_cb=None,
+        shadow_cb=None,
+        stress_cb=None,
+        divergences_cb=None,
     ) -> None:
         """Set callback functions for command responses."""
         self._get_status_callback = status_cb
@@ -107,6 +116,13 @@ class TelegramAlertBot:
         self._get_export_callback = export_cb
         self._start_callback = start_cb
         self._stop_callback = stop_cb
+        # Phase 4
+        self._optimizer_callback = optimizer_cb
+        self._approve_params_callback = approve_params_cb
+        self._reject_params_callback = reject_params_cb
+        self._shadow_callback = shadow_cb
+        self._stress_callback = stress_cb
+        self._divergences_callback = divergences_cb
 
     async def send_alert(self, level: AlertLevel, message: str, key: str = "") -> None:
         """Send an alert respecting level rules and anti-spam.
@@ -354,6 +370,115 @@ class TelegramAlertBot:
                     return f"Error exporting: {exc}"
             return "Export callback not configured"
 
+        # ── Phase 4 Commands ─────────────────────────────────
+        elif cmd in ("/optimizacion", "/optimization"):
+            if self._optimizer_callback:
+                try:
+                    data = await self._optimizer_callback()
+                    status = data.get("status", "idle")
+                    lines = [f"🔧 Optimizer: {status}"]
+                    if data.get("last_run"):
+                        lines.append(f"Last run: {data['last_run']}")
+                    lines.append(f"History: {data.get('history_count', 0)} runs")
+                    proposal = data.get("proposal")
+                    if proposal:
+                        lines.append(
+                            f"\n📋 Pending Proposal:\n"
+                            f"  Improvement: {proposal.get('improvement_pct', 0):.1f}%\n"
+                            f"  Sharpe: {proposal.get('sharpe', 0):.3f}\n"
+                            f"  Paper Sharpe: {proposal.get('paper_sharpe', 0):.3f}\n"
+                            f"  Params: {proposal.get('proposed_params', {})}"
+                        )
+                    return "\n".join(lines)
+                except Exception as exc:
+                    return f"Error: {exc}"
+            return "Optimizer not configured"
+
+        elif cmd == "/aprobar_params":
+            if self._approve_params_callback:
+                try:
+                    result = await self._approve_params_callback()
+                    if result:
+                        return f"✅ Parameters approved and applied:\n{result}"
+                    return "⚠️ No parameters pending approval"
+                except Exception as exc:
+                    return f"Error: {exc}"
+            return "Approve callback not configured"
+
+        elif cmd == "/rechazar_params":
+            if self._reject_params_callback:
+                try:
+                    result = await self._reject_params_callback()
+                    if result:
+                        return "❌ Parameters rejected. Keeping current settings."
+                    return "⚠️ No parameters pending rejection"
+                except Exception as exc:
+                    return f"Error: {exc}"
+            return "Reject callback not configured"
+
+        elif cmd == "/shadow":
+            if self._shadow_callback:
+                try:
+                    data = await self._shadow_callback()
+                    if not data:
+                        return "No shadow bots active"
+                    lines = ["👻 Shadow Bots:"]
+                    for bot in data:
+                        lines.append(
+                            f"\n• {bot['bot_id']}\n"
+                            f"  PnL: ${bot.get('total_pnl', 0):.2f}\n"
+                            f"  Trades: {bot.get('num_trades', 0)}\n"
+                            f"  Win Rate: {bot.get('win_rate', 0)*100:.0f}%\n"
+                            f"  Sharpe: {bot.get('sharpe_ratio', 0):.3f}"
+                        )
+                    return "\n".join(lines)
+                except Exception as exc:
+                    return f"Error: {exc}"
+            return "Shadow not configured"
+
+        elif cmd == "/stress":
+            if self._stress_callback:
+                try:
+                    data = await self._stress_callback()
+                    if not data:
+                        return "No stress test results yet"
+                    lines = [
+                        f"🏋️ Stress Test ({data.get('timestamp', '?')[:10]})\n"
+                        f"Capital: ${data.get('capital', 0):.0f}\n"
+                        f"Worst case: {data.get('worst_case_pct', 0):.1f}%"
+                    ]
+                    for s in data.get("scenarios", []):
+                        cb = "🔴" if s.get("triggers_circuit_breaker") else "🟢"
+                        lines.append(
+                            f"{cb} {s['scenario']}: ${s.get('simulated_pnl', 0):.0f} "
+                            f"({s.get('pnl_pct', 0):.1f}%)"
+                        )
+                    for alert in data.get("alerts", []):
+                        lines.append(f"⚠️ {alert}")
+                    return "\n".join(lines)
+                except Exception as exc:
+                    return f"Error: {exc}"
+            return "Stress test not configured"
+
+        elif cmd in ("/divergencias", "/divergences"):
+            if self._divergences_callback:
+                try:
+                    signals = await self._divergences_callback()
+                    if not signals:
+                        return "No divergences detected"
+                    lines = ["🔀 Cross-Market Divergences:"]
+                    for s in signals[:10]:
+                        lines.append(
+                            f"\n• {s.get('polymarket_question', '?')[:40]}\n"
+                            f"  Poly: {s.get('polymarket_prob', 0):.1%} vs "
+                            f"{s.get('external_platform', '?')}: {s.get('external_prob', 0):.1%}\n"
+                            f"  Gap: {s.get('abs_divergence', 0):.1%}"
+                        )
+                    return "\n".join(lines)
+                except Exception as exc:
+                    return f"Error: {exc}"
+            return "Cross-market not configured"
+
         elif cmd == "/help":
             return (
                 "🤖 Polymarket Bot Commands:\n\n"
@@ -369,6 +494,13 @@ class TelegramAlertBot:
                 "📈 /regimen — Market regime states\n"
                 "⚙️ /config — Current configuration\n"
                 "📄 /exportar — Export trades\n"
+                "\n— Phase 4 —\n"
+                "🔧 /optimizacion — Optimizer status\n"
+                "✅ /aprobar_params — Approve proposed params\n"
+                "❌ /rechazar_params — Reject proposed params\n"
+                "👻 /shadow — Shadow bot performance\n"
+                "🏋️ /stress — Stress test results\n"
+                "🔀 /divergencias — Cross-market divergences\n"
                 "❓ /help — Show this help"
             )
 
