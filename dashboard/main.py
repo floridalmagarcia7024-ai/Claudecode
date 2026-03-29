@@ -1,6 +1,7 @@
 """Dashboard FastAPI app with JWT auth, rate limiting, and CORS (Module 17).
 
 Provides REST API endpoints and serves Jinja2 dashboard templates.
+Phase 4: shadow performance, optimizer approve/reject, stress test endpoints.
 """
 
 from __future__ import annotations
@@ -100,6 +101,15 @@ _walk_forward = None
 _smart_exit = None
 _journal = None
 _regime_detector = None
+# Phase 4 components
+_optimizer = None
+_shadow_manager = None
+_stress_tester = None
+_cross_market = None
+_order_flow = None
+_liquidity_profile = None
+_ab_manager = None
+_audit_logger = None
 
 
 def set_components(
@@ -111,10 +121,21 @@ def set_components(
     smart_exit=None,
     journal=None,
     regime_detector=None,
+    # Phase 4
+    optimizer=None,
+    shadow_manager=None,
+    stress_tester=None,
+    cross_market=None,
+    order_flow=None,
+    liquidity_profile=None,
+    ab_manager=None,
+    audit_logger=None,
 ):
     """Wire components from main app startup."""
     global _engine, _state, _collector, _backtester, _walk_forward
     global _smart_exit, _journal, _regime_detector
+    global _optimizer, _shadow_manager, _stress_tester, _cross_market
+    global _order_flow, _liquidity_profile, _ab_manager, _audit_logger
     _engine = engine
     _state = state
     _collector = collector
@@ -123,6 +144,14 @@ def set_components(
     _smart_exit = smart_exit
     _journal = journal
     _regime_detector = regime_detector
+    _optimizer = optimizer
+    _shadow_manager = shadow_manager
+    _stress_tester = stress_tester
+    _cross_market = cross_market
+    _order_flow = order_flow
+    _liquidity_profile = liquidity_profile
+    _ab_manager = ab_manager
+    _audit_logger = audit_logger
 
 
 # ── JWT Auth ─────────────────────────────────────────────────────
@@ -478,6 +507,151 @@ async def api_export_trades(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=trades_export.csv"},
     )
+
+
+# ── Phase 4 API Endpoints ────────────────────────────────────────
+
+
+@dashboard_app.post("/api/optimizer/approve")
+@limiter.limit("5/minute")
+async def api_optimizer_approve(
+    request: Request, user: dict = Depends(get_current_user)
+):
+    """Approve proposed optimizer parameters."""
+    if not _optimizer:
+        raise HTTPException(status_code=503, detail="Optimizer not available")
+    result = _optimizer.approve_params()
+    if result:
+        return {"status": "approved", "params": result}
+    raise HTTPException(status_code=400, detail="No parameters pending approval")
+
+
+@dashboard_app.post("/api/optimizer/reject")
+@limiter.limit("5/minute")
+async def api_optimizer_reject(
+    request: Request, user: dict = Depends(get_current_user)
+):
+    """Reject proposed optimizer parameters."""
+    if not _optimizer:
+        raise HTTPException(status_code=503, detail="Optimizer not available")
+    result = _optimizer.reject_params()
+    if result:
+        return {"status": "rejected"}
+    raise HTTPException(status_code=400, detail="No parameters pending rejection")
+
+
+@dashboard_app.get("/api/optimizer/status")
+@limiter.limit("30/minute")
+async def api_optimizer_status(
+    request: Request, user: dict = Depends(get_current_user)
+):
+    """Get optimizer status and current proposal."""
+    if not _optimizer:
+        return {"status": "not_configured"}
+    return _optimizer.get_status_dict()
+
+
+@dashboard_app.get("/api/shadow/performance")
+@limiter.limit("30/minute")
+async def api_shadow_performance(
+    request: Request, user: dict = Depends(get_current_user)
+):
+    """Get shadow bot performance for comparison with real bot."""
+    if not _shadow_manager:
+        return []
+    return _shadow_manager.get_performance()
+
+
+@dashboard_app.get("/api/stress/latest")
+@limiter.limit("30/minute")
+async def api_stress_latest(
+    request: Request, user: dict = Depends(get_current_user)
+):
+    """Get latest stress test report for portfolio health section."""
+    if not _stress_tester or not _stress_tester.last_report:
+        return {"status": "no_data"}
+    return _stress_tester.last_report.to_dict()
+
+
+@dashboard_app.get("/api/cross-market/divergences")
+@limiter.limit("30/minute")
+async def api_divergences(
+    request: Request, user: dict = Depends(get_current_user)
+):
+    """Get current cross-market divergence signals."""
+    if not _cross_market:
+        return []
+    return _cross_market.get_recent_signals()
+
+
+@dashboard_app.get("/api/order-flow/whales")
+@limiter.limit("30/minute")
+async def api_whale_summary(
+    request: Request, user: dict = Depends(get_current_user)
+):
+    """Get whale pressure summary per market."""
+    if not _order_flow:
+        return {}
+    return _order_flow.get_whale_summary()
+
+
+@dashboard_app.get("/api/order-flow/manipulation")
+@limiter.limit("30/minute")
+async def api_manipulation_events(
+    request: Request, user: dict = Depends(get_current_user)
+):
+    """Get recent manipulation detection events."""
+    if not _order_flow:
+        return []
+    return _order_flow.get_manipulation_events()
+
+
+@dashboard_app.get("/api/liquidity/profile/{market_id}")
+@limiter.limit("30/minute")
+async def api_liquidity_profile(
+    market_id: str, request: Request, user: dict = Depends(get_current_user)
+):
+    """Get hourly liquidity profile for a market."""
+    if not _liquidity_profile:
+        return {"market_id": market_id, "status": "not_configured"}
+    return _liquidity_profile.get_profile_dict(market_id)
+
+
+@dashboard_app.get("/api/ab-test/status")
+@limiter.limit("30/minute")
+async def api_ab_status(
+    request: Request, user: dict = Depends(get_current_user)
+):
+    """Get A/B test + multi-wallet status."""
+    if not _ab_manager:
+        return {"ab_test_active": False, "wallets": 0}
+    return _ab_manager.get_status()
+
+
+@dashboard_app.get("/api/audit/summary")
+@limiter.limit("30/minute")
+async def api_audit_summary(
+    request: Request, user: dict = Depends(get_current_user)
+):
+    """Get audit log summary."""
+    if not _audit_logger:
+        return {"total_entries": 0}
+    return await _audit_logger.get_summary()
+
+
+@dashboard_app.get("/api/audit/entries")
+@limiter.limit("30/minute")
+async def api_audit_entries(
+    request: Request,
+    action: str | None = None,
+    market_id: str | None = None,
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    """Query audit log entries."""
+    if not _audit_logger:
+        return []
+    return await _audit_logger.get_entries(action=action, market_id=market_id, limit=limit)
 
 
 # ── Dashboard HTML Routes ────────────────────────────────────────

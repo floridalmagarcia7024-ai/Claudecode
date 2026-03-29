@@ -3,6 +3,8 @@
 Provides a /health endpoint and starts the trading engine as a background task.
 Phase 2: integrates regime detector, news feed, health monitor, telegram, event calendar.
 Phase 3: integrates dashboard, backtesting, smart exit, journal, full telegram commands.
+Phase 4: integrates optimizer, shadow bots, stress testing, cross-market, order flow,
+         liquidity profile, A/B testing, audit log.
 """
 
 from __future__ import annotations
@@ -32,7 +34,15 @@ from intelligence.event_calendar import CalendarEvent, EventCalendar
 from intelligence.news_feed import NewsFeedPipeline
 from journal.ai_journal import AIJournalAnalyzer
 from journal.recorder import TradeJournalRecorder
+from monitoring.audit import AuditLogger
 from monitoring.health import HealthMonitor
+from optimizer.auto_optimizer import AutoOptimizer
+from optimizer.shadow_bot import ShadowBotManager
+from core.stress_test import StressTester
+from intelligence.cross_market import CrossMarketIntelligence
+from intelligence.order_flow import OrderFlowMonitor
+from intelligence.liquidity_profile import LiquidityProfile
+from ab_test.ab_manager import ABTestManager
 from strategies.mean_reversion import MeanReversionStrategy
 from strategies.momentum import MomentumStrategy
 from telegram_bot.bot import TelegramAlertBot
@@ -70,7 +80,7 @@ async def lifespan(app: FastAPI):
     logger.info(
         "bot_starting",
         mode="paper" if settings.paper_mode else "real",
-        version="3.0.0",
+        version="4.0.0",
     )
 
     # Initialize components
@@ -120,6 +130,17 @@ async def lifespan(app: FastAPI):
     await journal.initialize()
     ai_journal = AIJournalAnalyzer()
 
+    # Phase 4 components
+    auto_optimizer = AutoOptimizer(backtester=backtester, walk_forward=walk_forward)
+    shadow_manager = ShadowBotManager()
+    stress_tester = StressTester(max_daily_loss_pct=settings.max_daily_loss_pct)
+    cross_market = CrossMarketIntelligence()
+    order_flow_monitor = OrderFlowMonitor()
+    liquidity_profiler = LiquidityProfile()
+    ab_manager = ABTestManager()
+    audit_logger = AuditLogger()
+    await audit_logger.initialize()
+
     # Strategies: mean reversion + momentum
     strategies = [
         MeanReversionStrategy(ai_analyzer=ai),
@@ -136,6 +157,14 @@ async def lifespan(app: FastAPI):
         smart_exit=smart_exit,
         journal=journal,
         regime_detector=regime_detector,
+        optimizer=auto_optimizer,
+        shadow_manager=shadow_manager,
+        stress_tester=stress_tester,
+        cross_market=cross_market,
+        order_flow=order_flow_monitor,
+        liquidity_profile=liquidity_profiler,
+        ab_manager=ab_manager,
+        audit_logger=audit_logger,
     )
 
     if client:
@@ -151,6 +180,13 @@ async def lifespan(app: FastAPI):
             health_monitor=health_monitor,
             telegram_bot=telegram_bot,
             event_calendar=event_calendar,
+            # Phase 4
+            optimizer=auto_optimizer,
+            shadow_manager=shadow_manager,
+            stress_tester=stress_tester,
+            cross_market=cross_market,
+            order_flow=order_flow_monitor,
+            liquidity_profile=liquidity_profiler,
         )
 
         # Attach Phase 3 components to engine
@@ -169,6 +205,14 @@ async def lifespan(app: FastAPI):
             smart_exit=smart_exit,
             journal=journal,
             regime_detector=regime_detector,
+            optimizer=auto_optimizer,
+            shadow_manager=shadow_manager,
+            stress_tester=stress_tester,
+            cross_market=cross_market,
+            order_flow=order_flow_monitor,
+            liquidity_profile=liquidity_profiler,
+            ab_manager=ab_manager,
+            audit_logger=audit_logger,
         )
 
         # Phase 3: Set up full telegram callbacks (Module 19)
@@ -246,6 +290,26 @@ async def lifespan(app: FastAPI):
                 for p in positions
             ]
 
+        # Phase 4 telegram callback helpers
+        async def _get_optimizer_status():
+            return auto_optimizer.get_status_dict()
+
+        async def _approve_params():
+            return auto_optimizer.approve_params()
+
+        async def _reject_params():
+            return auto_optimizer.reject_params()
+
+        async def _get_shadow_perf():
+            return shadow_manager.get_performance()
+
+        async def _get_stress_report():
+            r = stress_tester.last_report
+            return r.to_dict() if r else None
+
+        async def _get_divergences():
+            return cross_market.get_recent_signals()
+
         telegram_bot.set_callbacks(
             status_cb=lambda: engine.get_status() if engine else {},
             balance_cb=lambda: client.get_balance(),
@@ -258,6 +322,13 @@ async def lifespan(app: FastAPI):
             export_cb=lambda: journal.export_csv(),
             start_cb=lambda: engine.start() if engine else None,
             stop_cb=lambda: engine.stop() if engine else None,
+            # Phase 4
+            optimizer_cb=_get_optimizer_status,
+            approve_params_cb=_approve_params,
+            reject_params_cb=_reject_params,
+            shadow_cb=_get_shadow_perf,
+            stress_cb=_get_stress_report,
+            divergences_cb=_get_divergences,
         )
 
         # Phase 2: Reconcile on restart (Module 13)
@@ -286,12 +357,14 @@ async def lifespan(app: FastAPI):
     await journal.close()
     await collector.close()
     await state.close()
+    await audit_logger.close()
+    await cross_market.close()
     logger.info("bot_shutdown_complete")
 
 
 # ── Main app mounts the dashboard ────────────────────────────────
 
-app = FastAPI(title="Polymarket Trading Bot", version="3.0.0", lifespan=lifespan)
+app = FastAPI(title="Polymarket Trading Bot", version="4.0.0", lifespan=lifespan)
 
 # Mount the Phase 3 dashboard app (includes all API endpoints + HTML)
 app.mount("/", dashboard_app)

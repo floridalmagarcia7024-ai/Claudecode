@@ -11,6 +11,14 @@ Phase 2 additions:
   - Event calendar checks (Module 12C)
   - Health monitor with degradation chain (Module 13)
   - Telegram alerts (Module 14)
+
+Phase 4 additions:
+  - Auto optimizer weekly run (Module 21)
+  - Shadow bot signal forwarding (Module 22)
+  - Stress testing daily (Module 23)
+  - Cross-market divergence checks (Module 24)
+  - Order flow monitor + manipulation detection (Module 25)
+  - Liquidity profile recording (Module 25B)
 """
 
 from __future__ import annotations
@@ -65,6 +73,13 @@ class TradingEngine:
         health_monitor: HealthMonitor | None = None,
         telegram_bot: TelegramAlertBot | None = None,
         event_calendar: EventCalendar | None = None,
+        # Phase 4 components
+        optimizer=None,
+        shadow_manager=None,
+        stress_tester=None,
+        cross_market=None,
+        order_flow=None,
+        liquidity_profile=None,
     ) -> None:
         self._client = client
         self._state = state
@@ -77,6 +92,14 @@ class TradingEngine:
         self._health = health_monitor
         self._telegram = telegram_bot
         self._event_calendar = event_calendar
+
+        # Phase 4
+        self._optimizer = optimizer
+        self._shadow_manager = shadow_manager
+        self._stress_tester = stress_tester
+        self._cross_market = cross_market
+        self._order_flow = order_flow
+        self._liquidity_profile = liquidity_profile
 
         self._running = False
         self._degraded = False
@@ -121,6 +144,9 @@ class TradingEngine:
             tasks.append(asyncio.create_task(self._health.run_heartbeat_loop(), name="health_monitor"))
         if self._telegram:
             tasks.append(asyncio.create_task(self._telegram.run_info_flush_loop(), name="telegram_flush"))
+
+        # Phase 4: additional loops
+        tasks.append(asyncio.create_task(self._phase4_periodic_loop(), name="phase4_periodic"))
 
         try:
             await asyncio.gather(*tasks)
@@ -405,6 +431,31 @@ class TradingEngine:
         else:
             orderbook = None
 
+        # Phase 4: Order flow confidence adjustment (Module 25A)
+        if self._order_flow and orderbook:
+            bids = [(b[0], b[1]) for b in getattr(orderbook, "bids", [])]
+            asks = [(a[0], a[1]) for a in getattr(orderbook, "asks", [])]
+            if bids or asks:
+                self._order_flow.analyze_orderbook(signal.market_id, bids, asks)
+            adj = self._order_flow.get_confidence_adjustment(
+                signal.market_id, signal.direction
+            )
+            if adj != 0:
+                logger.debug(
+                    "order_flow_adjustment",
+                    market_id=signal.market_id,
+                    adjustment=adj,
+                )
+
+        # Phase 4: Liquidity profile priority (Module 25B)
+        if self._liquidity_profile:
+            priority = self._liquidity_profile.get_priority_multiplier(signal.market_id)
+            size_usd *= priority
+
+        # Phase 4: Forward signal to shadow bots (Module 22)
+        price = orderbook.mid_price if orderbook and orderbook.mid_price > 0 else 0.5
+        self._forward_signal_to_shadows(signal, price, size_usd)
+
         # Execute trade
         await self._execute_trade(signal, size_usd, orderbook)
 
@@ -624,6 +675,151 @@ class TradingEngine:
             await self._telegram.send_alert(
                 AlertLevel.INFO,
                 f"Position closed: {position.market_id[:20]} reason={exit_reason} @ {current_price:.4f}",
+            )
+
+    # ── Phase 4: Periodic Loop ─────────────────────────────────
+
+    async def _phase4_periodic_loop(self) -> None:
+        """Run Phase 4 periodic tasks: optimizer, stress test, cross-market."""
+        while self._running:
+            try:
+                # Stress testing — daily at 00:00 UTC (Module 23)
+                if self._stress_tester and self._stress_tester.should_run():
+                    await self._run_stress_test()
+
+                # Auto optimizer — Sunday 02:00 UTC (Module 21)
+                if self._optimizer and self._optimizer.should_run():
+                    await self._run_optimizer()
+
+                # Check if optimizer paper test is complete
+                if self._optimizer and self._optimizer.check_paper_test_complete():
+                    self._optimizer.promote_to_approval(0.0)
+                    if self._telegram:
+                        proposal = self._optimizer.current_proposal
+                        if proposal:
+                            await self._telegram.send_alert(
+                                AlertLevel.IMPORTANT,
+                                "Optimizer proposal ready for review. "
+                                "Use /optimizacion to see details, "
+                                "/aprobar_params or /rechazar_params to decide.",
+                                key="optimizer_proposal",
+                            )
+
+                # Cross-market divergences (Module 24) — every hour
+                if self._cross_market and self._markets_cache:
+                    await self._check_cross_market()
+
+                # Record liquidity profiles (Module 25B)
+                if self._liquidity_profile and self._markets_cache:
+                    for market in self._markets_cache[:20]:
+                        if market.token_ids:
+                            try:
+                                ob = await self._client.get_orderbook(market.token_ids[0])
+                                if ob and ob.spread_pct > 0:
+                                    self._liquidity_profile.record_spread(
+                                        market.market_id, ob.spread_pct
+                                    )
+                            except Exception:
+                                pass
+
+            except Exception as exc:
+                logger.error("phase4_loop_error", error=str(exc))
+
+            await asyncio.sleep(300)  # Every 5 minutes
+
+    async def _run_stress_test(self) -> None:
+        """Execute daily stress test."""
+        positions = await self._state.get_active_positions()
+        pos_dicts = [
+            {
+                "market_id": p.market_id,
+                "direction": p.direction,
+                "size_usd": p.size_usd,
+                "entry_price": p.entry_price,
+                "current_price": p.current_price,
+            }
+            for p in positions
+        ]
+        balance = await self._client.get_balance()
+        report = await self._stress_tester.run_stress_test(pos_dicts, balance)
+
+        # Send alerts if needed
+        if self._telegram:
+            for alert_msg in report.alerts:
+                await self._telegram.send_alert(
+                    AlertLevel.CRITICAL, alert_msg, key="stress_alert"
+                )
+            if not report.alerts:
+                await self._telegram.send_alert(
+                    AlertLevel.INFO,
+                    f"Stress test OK. Worst case: {report.worst_case_pct:.1f}%",
+                )
+
+    async def _run_optimizer(self) -> None:
+        """Execute weekly parameter optimization."""
+        try:
+            # Gather snapshots for backtesting
+            snapshots = []
+            for market in self._markets_cache[:10]:
+                history = await self._collector.get_history(
+                    market.market_id, days=30
+                )
+                snapshots.extend(history)
+
+            if snapshots:
+                result = await self._optimizer.run_optimization(snapshots)
+                self._optimizer.mark_run_complete()
+                if result and self._telegram:
+                    await self._telegram.send_alert(
+                        AlertLevel.IMPORTANT,
+                        f"Optimizer found {result.improvement_pct:.1f}% improvement. "
+                        f"Starting 7-day paper test.",
+                        key="optimizer_result",
+                    )
+        except Exception as exc:
+            logger.error("optimizer_run_error", error=str(exc))
+
+    async def _check_cross_market(self) -> None:
+        """Check for cross-market divergences."""
+        pm_markets = [
+            {
+                "market_id": m.market_id,
+                "question": m.question,
+                "probability": m.probability,
+            }
+            for m in self._markets_cache[:30]
+        ]
+        try:
+            signals = await self._cross_market.check_divergences(pm_markets)
+            if signals and self._telegram:
+                for sig in signals[:3]:
+                    await self._telegram.send_alert(
+                        AlertLevel.INFO,
+                        f"Divergence: {sig.polymarket_question[:40]} "
+                        f"Poly={sig.polymarket_prob:.0%} vs "
+                        f"{sig.external_platform}={sig.external_prob:.0%} "
+                        f"(gap {sig.abs_divergence:.0%})",
+                    )
+        except Exception as exc:
+            logger.warning("cross_market_error", error=str(exc))
+
+    def _forward_signal_to_shadows(
+        self, signal: Signal, price: float, size_usd: float
+    ) -> None:
+        """Forward a trading signal to all shadow bots for evaluation."""
+        if not self._shadow_manager:
+            return
+        for bot_id in list(self._shadow_manager.bots.keys()):
+            self._shadow_manager.evaluate_signal(
+                bot_id=bot_id,
+                market_id=signal.market_id,
+                direction=signal.direction,
+                price=price,
+                size_usd=size_usd,
+                strategy=signal.strategy,
+                z_score=getattr(signal, "z_score", 0.0),
+                sentiment=getattr(signal, "sentiment_score", 0.0),
+                ai_confidence=getattr(signal, "ai_confidence", 0.0),
             )
 
     # ── Priority Queue for Cancellations ──────────────────────
