@@ -366,9 +366,26 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Polymarket Trading Bot", version="4.0.0", lifespan=lifespan)
 
+
+# Direct /health on the main app — guarantees Railway healthcheck works
+# even if the mounted sub-app is busy processing requests.
+@app.get("/health")
+async def main_health():
+    """Top-level healthcheck for Railway — always responds fast."""
+    if engine:
+        return {
+            "status": "running" if engine.is_running else "stopped",
+            "mode": "paper" if settings.paper_mode else "real",
+            "uptime_s": round(engine.uptime_seconds),
+        }
+    return {"status": "initializing"}
+
+
 # Mount the Phase 3 dashboard app (includes all API endpoints + HTML)
 app.mount("/", dashboard_app)
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
