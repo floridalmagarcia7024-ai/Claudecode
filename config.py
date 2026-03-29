@@ -72,6 +72,7 @@ class Settings(BaseSettings):
 
     # ── Operational ────────────────────────────────────────────
     paper_mode: bool = True
+    paper_initial_balance: float = 10_000.0  # Simulated starting capital for paper mode
     scan_interval_seconds: int = 60
     position_check_interval_seconds: int = 30
     data_collection_interval_seconds: int = 300

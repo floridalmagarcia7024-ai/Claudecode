@@ -119,6 +119,18 @@ class TradingEngine:
     def is_degraded(self) -> bool:
         return self._degraded
 
+    async def _get_balance(self) -> float:
+        """Get current balance — simulated in paper mode, real otherwise."""
+        if settings.paper_mode:
+            # Paper mode: initial capital + realized PnL from closed trades
+            daily_pnl = await self._state.get_daily_pnl()
+            trades = await self._state.get_trade_history(limit=10000)
+            total_realized = sum(t.pnl_usd for t in trades)
+            open_positions = await self._state.get_active_positions()
+            total_open = sum(p.size_usd for p in open_positions)
+            return settings.paper_initial_balance + total_realized - total_open
+        return await self._client.get_balance()
+
     async def start(self) -> None:
         """Start all engine loops as concurrent tasks."""
         self._running = True
@@ -214,7 +226,7 @@ class TradingEngine:
             self._health.report_component_status("api", True)
 
         # Get balance and check minimum capital
-        balance = await self._client.get_balance()
+        balance = await self._get_balance()
         if balance < settings.min_capital_usd:
             logger.warning(
                 "insufficient_capital",
@@ -338,7 +350,7 @@ class TradingEngine:
         if not signals:
             return
 
-        balance = await self._client.get_balance()
+        balance = await self._get_balance()
         portfolio = await self._state.get_portfolio_state(balance)
 
         for news_signal in signals:
@@ -740,7 +752,7 @@ class TradingEngine:
             }
             for p in positions
         ]
-        balance = await self._client.get_balance()
+        balance = await self._get_balance()
         report = await self._stress_tester.run_stress_test(pos_dicts, balance)
 
         # Send alerts if needed
