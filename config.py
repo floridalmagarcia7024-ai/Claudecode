@@ -80,9 +80,16 @@ class Settings(BaseSettings):
     api_latency_max_seconds: float = 8.0
     data_retention_days: int = 90
 
+    # ── Phase 3: Dashboard & JWT ─────────────────────────────────
+    jwt_secret: str = ""
+    dashboard_user: str = "admin"
+    dashboard_pass: str = "polymarket"
+    cors_origins: str = ""
+
     # ── Database ───────────────────────────────────────────────
     trades_db_path: str = "data/trades.db"
     market_history_db_path: str = "data/market_history.db"
+    journal_db_path: str = "data/journal.db"
 
     # ── Rate Limiting ──────────────────────────────────────────
     rate_limit_rpm: int = 60  # Conservative: ~60 effective after 20% buffer

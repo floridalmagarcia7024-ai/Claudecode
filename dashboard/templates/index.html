@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polymarket Bot Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9"></script>
+    <style>
+        :root { --bg: #0f172a; --card: #1e293b; --accent: #3b82f6; --green: #22c55e; --red: #ef4444; --yellow: #eab308; --text: #e2e8f0; --muted: #94a3b8; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+        .header { background: var(--card); padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; }
+        .header h1 { font-size: 1.25rem; }
+        .status-bar { display: flex; gap: 2rem; font-size: 0.875rem; }
+        .status-item { display: flex; flex-direction: column; align-items: center; }
+        .status-label { color: var(--muted); font-size: 0.75rem; }
+        .status-value { font-weight: 600; font-size: 1rem; }
+        .status-value.green { color: var(--green); }
+        .status-value.red { color: var(--red); }
+        .status-value.yellow { color: var(--yellow); }
+        .grid { display: grid; grid-template-columns: 1fr 300px; gap: 1rem; padding: 1rem 2rem; }
+        .card { background: var(--card); border-radius: 0.5rem; padding: 1rem; border: 1px solid #334155; }
+        .card h2 { font-size: 1rem; margin-bottom: 0.75rem; color: var(--muted); }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        th, td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #334155; }
+        th { color: var(--muted); font-weight: 500; }
+        .btn { padding: 0.5rem 1rem; border: none; border-radius: 0.375rem; cursor: pointer; font-size: 0.85rem; font-weight: 500; }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-danger { background: var(--red); color: white; }
+        .btn-success { background: var(--green); color: white; }
+        .btn-warning { background: var(--yellow); color: #1e293b; }
+        .controls { display: flex; gap: 0.5rem; padding: 1rem 2rem; }
+        .log-panel { max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; }
+        .log-entry { padding: 0.25rem 0; border-bottom: 1px solid #1e293b; }
+        .log-entry.critical { color: var(--red); }
+        .log-entry.important { color: var(--yellow); }
+        .log-entry.info { color: var(--text); }
+        .heat-map { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
+        .heat-cell { padding: 0.75rem; border-radius: 0.375rem; text-align: center; font-size: 0.8rem; }
+        .nav-links { display: flex; gap: 1rem; }
+        .nav-links a { color: var(--accent); text-decoration: none; font-size: 0.875rem; }
+        .pnl-positive { color: var(--green); }
+        .pnl-negative { color: var(--red); }
+        #login-form { max-width: 400px; margin: 4rem auto; }
+        #login-form input { width: 100%; padding: 0.5rem; margin: 0.5rem 0; background: var(--bg); border: 1px solid #334155; color: var(--text); border-radius: 0.375rem; }
+    </style>
+</head>
+<body x-data="dashboard()" x-init="init()">
+    <!-- Login -->
+    <div x-show="!token" id="login-form" class="card">
+        <h2>Login</h2>
+        <input type="text" x-model="username" placeholder="Username">
+        <input type="password" x-model="password" placeholder="Password" @keyup.enter="login()">
+        <button class="btn btn-primary" @click="login()" style="width:100%;margin-top:0.5rem">Login</button>
+        <p x-show="loginError" style="color:var(--red);margin-top:0.5rem;font-size:0.85rem" x-text="loginError"></p>
+    </div>
+
+    <!-- Dashboard -->
+    <div x-show="token" x-cloak>
+        <div class="header">
+            <h1>Polymarket Trading Bot</h1>
+            <div class="nav-links">
+                <a href="/calibration">Calibration</a>
+                <a href="/onboarding">Setup</a>
+                <a href="/api/docs" target="_blank">API Docs</a>
+                <a href="#" @click.prevent="logout()">Logout</a>
+            </div>
+        </div>
+
+        <!-- Top Status Bar -->
+        <div class="header" style="border-top:none">
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="status-label">Status</span>
+                    <span class="status-value" :class="status.status === 'running' ? 'green' : 'red'" x-text="status.status || 'N/A'"></span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Mode</span>
+                    <span class="status-value" x-text="status.mode || 'N/A'"></span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Balance</span>
+                    <span class="status-value" x-text="'$' + (metrics.total_pnl || 0).toFixed(2)"></span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">PnL Today</span>
+                    <span class="status-value" :class="metrics.daily_pnl >= 0 ? 'green' : 'red'" x-text="'$' + (metrics.daily_pnl || 0).toFixed(2)"></span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Regime</span>
+                    <span class="status-value" x-text="status.regime || 'ranging'"></span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Signals Today</span>
+                    <span class="status-value" x-text="calibration.signals_detected || 0"></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <button class="btn btn-success" @click="startBot()">Start</button>
+            <button class="btn btn-danger" @click="stopBot()">Stop</button>
+            <button class="btn btn-warning" @click="window.location='/calibration'">Calibrate</button>
+            <button class="btn btn-primary" @click="refreshAll()">Refresh</button>
+            <button class="btn btn-primary" @click="exportTrades()">Export CSV</button>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="grid">
+            <div>
+                <!-- Positions -->
+                <div class="card" style="margin-bottom:1rem">
+                    <h2>Active Positions</h2>
+                    <table>
+                        <thead>
+                            <tr><th>Market</th><th>Dir</th><th>Entry</th><th>Current</th><th>Size</th><th>Trail</th><th>Strategy</th><th></th></tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="pos in positions" :key="pos.id">
+                                <tr>
+                                    <td x-text="pos.market_id?.substring(0,20) + '...'"></td>
+                                    <td x-text="pos.direction"></td>
+                                    <td x-text="pos.entry_price?.toFixed(4)"></td>
+                                    <td x-text="pos.current_price?.toFixed(4)"></td>
+                                    <td x-text="'$' + pos.size_usd?.toFixed(0)"></td>
+                                    <td x-text="pos.trailing_state"></td>
+                                    <td x-text="pos.strategy"></td>
+                                    <td><button class="btn btn-danger" style="padding:0.25rem 0.5rem;font-size:0.75rem" @click="closePosition(pos.id)">Close</button></td>
+                                </tr>
+                            </template>
+                            <tr x-show="positions.length === 0"><td colspan="8" style="text-align:center;color:var(--muted)">No active positions</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Recent Trades -->
+                <div class="card">
+                    <h2>Recent Trades</h2>
+                    <table>
+                        <thead>
+                            <tr><th>Market</th><th>Dir</th><th>PnL</th><th>Strategy</th><th>Exit</th><th>Time</th></tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="trade in trades" :key="trade.id">
+                                <tr>
+                                    <td x-text="trade.market_id?.substring(0,20)"></td>
+                                    <td x-text="trade.direction"></td>
+                                    <td :class="trade.pnl_usd >= 0 ? 'pnl-positive' : 'pnl-negative'" x-text="'$' + trade.pnl_usd?.toFixed(2)"></td>
+                                    <td x-text="trade.strategy"></td>
+                                    <td x-text="trade.exit_reason"></td>
+                                    <td x-text="trade.timestamp?.substring(11,19)"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Right Panel -->
+            <div>
+                <!-- Metrics -->
+                <div class="card" style="margin-bottom:1rem">
+                    <h2>Metrics</h2>
+                    <div style="font-size:0.85rem">
+                        <p>Win Rate: <strong x-text="(metrics.win_rate * 100).toFixed(1) + '%'"></strong></p>
+                        <p>Sharpe: <strong x-text="metrics.sharpe_ratio?.toFixed(3)"></strong></p>
+                        <p>Max DD: <strong x-text="'$' + metrics.max_drawdown?.toFixed(2)"></strong></p>
+                        <p>Total Trades: <strong x-text="metrics.total_trades"></strong></p>
+                    </div>
+                </div>
+
+                <!-- Exposure Heat Map -->
+                <div class="card" style="margin-bottom:1rem">
+                    <h2>Category Exposure</h2>
+                    <div class="heat-map">
+                        <template x-for="cat in categories" :key="cat.name">
+                            <div class="heat-cell" :style="'background:' + cat.color">
+                                <div x-text="cat.name"></div>
+                                <div x-text="'$' + cat.exposure.toFixed(0)"></div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Log -->
+                <div class="card">
+                    <h2>Live Log</h2>
+                    <div class="log-panel">
+                        <template x-for="(log, i) in logs" :key="i">
+                            <div class="log-entry" :class="log.level" x-text="log.time + ' ' + log.msg"></div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    function dashboard() {
+        return {
+            token: localStorage.getItem('jwt_token') || '',
+            username: '', password: '', loginError: '',
+            status: {}, metrics: {}, positions: [], trades: [], calibration: {},
+            categories: [], logs: [],
+            refreshInterval: null,
+
+            async init() {
+                if (this.token) {
+                    await this.refreshAll();
+                    this.refreshInterval = setInterval(() => this.refreshAll(), 5000);
+                }
+            },
+
+            async login() {
+                try {
+                    const res = await fetch('/api/auth/login', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({username: this.username, password: this.password})
+                    });
+                    if (!res.ok) { this.loginError = 'Invalid credentials'; return; }
+                    const data = await res.json();
+                    this.token = data.access_token;
+                    localStorage.setItem('jwt_token', this.token);
+                    this.loginError = '';
+                    await this.refreshAll();
+                    this.refreshInterval = setInterval(() => this.refreshAll(), 5000);
+                } catch(e) { this.loginError = 'Connection error'; }
+            },
+
+            logout() {
+                this.token = '';
+                localStorage.removeItem('jwt_token');
+                if (this.refreshInterval) clearInterval(this.refreshInterval);
+            },
+
+            headers() { return { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' }; },
+
+            async apiFetch(url) {
+                const res = await fetch(url, { headers: this.headers() });
+                if (res.status === 401) { this.logout(); return null; }
+                return res.ok ? await res.json() : null;
+            },
+
+            async refreshAll() {
+                const [s, m, p, t, c] = await Promise.all([
+                    this.apiFetch('/api/status').catch(() => null),
+                    this.apiFetch('/api/metrics').catch(() => null),
+                    this.apiFetch('/api/positions').catch(() => null),
+                    this.apiFetch('/api/trades?limit=20').catch(() => null),
+                    this.apiFetch('/api/metrics/calibration').catch(() => null),
+                ]);
+                if (s) this.status = s;
+                if (m) this.metrics = m;
+                if (p) this.positions = p;
+                if (t) this.trades = t;
+                if (c) this.calibration = c;
+                this.updateCategories();
+            },
+
+            updateCategories() {
+                const cats = {};
+                for (const p of this.positions) {
+                    cats[p.category] = (cats[p.category] || 0) + p.size_usd;
+                }
+                const colors = { politics: '#3b82f6aa', crypto: '#8b5cf6aa', sports: '#22c55eaa', other: '#6b7280aa' };
+                this.categories = Object.entries(cats).map(([name, exposure]) => ({
+                    name, exposure, color: colors[name] || colors.other
+                }));
+                if (this.categories.length === 0) {
+                    this.categories = [
+                        { name: 'politics', exposure: 0, color: colors.politics },
+                        { name: 'crypto', exposure: 0, color: colors.crypto },
+                        { name: 'sports', exposure: 0, color: colors.sports },
+                        { name: 'other', exposure: 0, color: colors.other },
+                    ];
+                }
+            },
+
+            async startBot() { await fetch('/api/start', { method: 'POST', headers: this.headers() }); await this.refreshAll(); },
+            async stopBot() { await fetch('/api/stop', { method: 'POST', headers: this.headers() }); await this.refreshAll(); },
+            async closePosition(id) {
+                await fetch('/api/positions/' + id + '/close', { method: 'POST', headers: this.headers() });
+                await this.refreshAll();
+            },
+            async exportTrades() {
+                const res = await fetch('/api/export/trades?format=csv', { headers: this.headers() });
+                if (res.ok) {
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url; a.download = 'trades.csv'; a.click();
+                }
+            }
+        };
+    }
+    </script>
+</body>
+</html>
