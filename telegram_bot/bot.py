@@ -1,4 +1,4 @@
-"""Telegram alert system with graduated severity levels (Module 14).
+"""Telegram alert system with graduated severity levels (Module 14 + Module 19).
 
 4 levels:
   CRITICAL  -> send immediately, retry 3x
@@ -7,7 +7,10 @@
   DEBUG     -> log only, never Telegram
 
 Anti-spam: same alert not repeated within 15 minutes.
-Commands: /status /balance /posiciones /help
+
+Phase 2 commands: /status /balance /posiciones /help
+Phase 3 commands: /start /stop /trades /metricas /calibracion
+                  /backtest /regimen /config /exportar
 """
 
 from __future__ import annotations
@@ -83,11 +86,27 @@ class TelegramAlertBot:
         status_cb=None,
         balance_cb=None,
         positions_cb=None,
+        trades_cb=None,
+        metrics_cb=None,
+        calibration_cb=None,
+        backtest_cb=None,
+        regime_cb=None,
+        export_cb=None,
+        start_cb=None,
+        stop_cb=None,
     ) -> None:
         """Set callback functions for command responses."""
         self._get_status_callback = status_cb
         self._get_balance_callback = balance_cb
         self._get_positions_callback = positions_cb
+        self._get_trades_callback = trades_cb
+        self._get_metrics_callback = metrics_cb
+        self._get_calibration_callback = calibration_cb
+        self._get_backtest_callback = backtest_cb
+        self._get_regime_callback = regime_cb
+        self._get_export_callback = export_cb
+        self._start_callback = start_cb
+        self._stop_callback = stop_cb
 
     async def send_alert(self, level: AlertLevel, message: str, key: str = "") -> None:
         """Send an alert respecting level rules and anti-spam.
@@ -151,10 +170,31 @@ class TelegramAlertBot:
         await self.flush_info_summary()
 
     async def handle_command(self, command: str) -> str:
-        """Handle a Telegram command and return response text."""
-        cmd = command.strip().lower()
+        """Handle a Telegram command and return response text.
 
-        if cmd == "/status":
+        Phase 3: Full command set (Module 19).
+        """
+        cmd = command.strip().lower().split()[0] if command.strip() else ""
+
+        if cmd == "/start":
+            if self._start_callback:
+                try:
+                    await self._start_callback()
+                    return "▶️ Bot started"
+                except Exception as exc:
+                    return f"Error starting bot: {exc}"
+            return "Start callback not configured"
+
+        elif cmd == "/stop":
+            if self._stop_callback:
+                try:
+                    await self._stop_callback()
+                    return "⏹ Bot stopped"
+                except Exception as exc:
+                    return f"Error stopping bot: {exc}"
+            return "Stop callback not configured"
+
+        elif cmd == "/status":
             if self._get_status_callback:
                 try:
                     status = await self._get_status_callback()
@@ -180,27 +220,159 @@ class TelegramAlertBot:
                         return "No active positions"
                     lines = ["📈 Active Positions:"]
                     for p in positions:
-                        lines.append(
-                            f"• {p.get('market_id', '?')[:20]} "
-                            f"{p.get('direction', '?')} "
-                            f"${p.get('size_usd', 0):.0f} "
-                            f"@ {p.get('entry_price', 0):.4f}"
-                        )
+                        mid = p.get("market_id", "?")[:20]
+                        d = p.get("direction", "?")
+                        sz = p.get("size_usd", 0)
+                        ep = p.get("entry_price", 0)
+                        ts = p.get("trailing_state", "watching")
+                        lines.append(f"• {mid} {d} ${sz:.0f} @ {ep:.4f} [{ts}]")
                     return "\n".join(lines)
                 except Exception as exc:
                     return f"Error getting positions: {exc}"
             return "Positions callback not configured"
 
-        elif cmd == "/help":
+        elif cmd == "/trades":
+            if self._get_trades_callback:
+                try:
+                    trades = await self._get_trades_callback()
+                    if not trades:
+                        return "No recent trades"
+                    lines = ["📋 Recent Trades:"]
+                    for t in trades[:10]:
+                        pnl = t.get("pnl_usd", 0)
+                        icon = "✅" if pnl > 0 else "❌"
+                        lines.append(
+                            f"{icon} {t.get('market_id', '?')[:20]} "
+                            f"${pnl:.2f} ({t.get('strategy', '?')})"
+                        )
+                    return "\n".join(lines)
+                except Exception as exc:
+                    return f"Error getting trades: {exc}"
+            return "Trades callback not configured"
+
+        elif cmd in ("/metricas", "/metrics"):
+            if self._get_metrics_callback:
+                try:
+                    m = await self._get_metrics_callback()
+                    return (
+                        f"📊 Metrics\n"
+                        f"Total PnL: ${m.get('total_pnl', 0):.2f}\n"
+                        f"Daily PnL: ${m.get('daily_pnl', 0):.2f}\n"
+                        f"Win Rate: {m.get('win_rate', 0) * 100:.1f}%\n"
+                        f"Sharpe: {m.get('sharpe_ratio', 0):.3f}\n"
+                        f"Max DD: ${m.get('max_drawdown', 0):.2f}\n"
+                        f"Total Trades: {m.get('total_trades', 0)}"
+                    )
+                except Exception as exc:
+                    return f"Error getting metrics: {exc}"
+            return "Metrics callback not configured"
+
+        elif cmd in ("/calibracion", "/calibration"):
+            if self._get_calibration_callback:
+                try:
+                    c = await self._get_calibration_callback()
+                    detected = c.get("signals_detected", 0)
+                    executed = c.get("executed", 0)
+                    rejected = detected - executed
+                    # Find major rejection cause
+                    causes = {
+                        "spread": c.get("rejected_spread", 0),
+                        "z-score": c.get("rejected_zscore", 0),
+                        "AI": c.get("rejected_ai", 0),
+                        "liquidity": c.get("rejected_liquidity", 0),
+                    }
+                    top_cause = max(causes, key=causes.get) if causes else "none"
+                    top_count = causes.get(top_cause, 0)
+                    return (
+                        f"🔧 Calibration\n"
+                        f"Signals detected: {detected} | Executed: {executed} | "
+                        f"Rejected: {rejected}\n"
+                        f"Top rejection: {top_cause} ({top_count} of {rejected})"
+                    )
+                except Exception as exc:
+                    return f"Error getting calibration: {exc}"
+            return "Calibration callback not configured"
+
+        elif cmd == "/backtest":
+            if self._get_backtest_callback:
+                try:
+                    results = await self._get_backtest_callback()
+                    if not results:
+                        return "No backtest results available"
+                    lines = ["🧪 Backtest Results:"]
+                    for r in results:
+                        sem = {"GREEN": "🟢", "YELLOW": "🟡", "RED": "🔴"}.get(
+                            r.get("semaphore", "RED"), "🔴"
+                        )
+                        lines.append(
+                            f"{sem} {r.get('strategy', '?')}: "
+                            f"Sharpe={r.get('sharpe_ratio', 0):.3f} "
+                            f"WR={r.get('win_rate', 0) * 100:.0f}% "
+                            f"Trades={r.get('total_trades', 0)}"
+                        )
+                        for f in r.get("failure_reasons", []):
+                            lines.append(f"  ⚠ {f}")
+                    return "\n".join(lines)
+                except Exception as exc:
+                    return f"Error getting backtest: {exc}"
+            return "Backtest callback not configured"
+
+        elif cmd in ("/regimen", "/regime"):
+            if self._get_regime_callback:
+                try:
+                    regimes = await self._get_regime_callback()
+                    if not regimes:
+                        return "No regime data"
+                    lines = ["📈 Market Regimes:"]
+                    for market_id, regime in regimes.items():
+                        lines.append(f"• {market_id[:20]}: {regime}")
+                    return "\n".join(lines[:15])  # Cap
+                except Exception as exc:
+                    return f"Error getting regimes: {exc}"
+            return "Regime callback not configured"
+
+        elif cmd == "/config":
             return (
-                "🤖 Polymarket Bot Commands:\n"
-                "/status — Bot status & health\n"
-                "/balance — Current USDC balance\n"
-                "/posiciones — Active positions\n"
-                "/help — Show this help"
+                f"⚙️ Current Config\n"
+                f"Z-Score: {settings.zscore_threshold}\n"
+                f"Max Spread: {settings.max_spread_pct}%\n"
+                f"Sentiment Shift: {settings.sentiment_shift}\n"
+                f"AI Confidence: {settings.ai_confidence_min}\n"
+                f"Position Size: {settings.default_position_pct}%\n"
+                f"Trailing Stop: {settings.trailing_pct}%\n"
+                f"Mode: {'Paper' if settings.paper_mode else 'REAL'}"
             )
 
-        return f"Unknown command: {command}"
+        elif cmd in ("/exportar", "/export"):
+            if self._get_export_callback:
+                try:
+                    csv_data = await self._get_export_callback()
+                    if csv_data:
+                        return f"📄 Export ({len(csv_data)} bytes). Use dashboard for full CSV download."
+                    return "No trades to export"
+                except Exception as exc:
+                    return f"Error exporting: {exc}"
+            return "Export callback not configured"
+
+        elif cmd == "/help":
+            return (
+                "🤖 Polymarket Bot Commands:\n\n"
+                "▶️ /start — Start the bot\n"
+                "⏹ /stop — Stop the bot\n"
+                "📊 /status — Bot status & health\n"
+                "💰 /balance — Current USDC balance\n"
+                "📈 /posiciones — Active positions\n"
+                "📋 /trades — Recent trade history\n"
+                "📊 /metricas — Performance metrics\n"
+                "🔧 /calibracion — Signal calibration stats\n"
+                "🧪 /backtest — Backtesting results\n"
+                "📈 /regimen — Market regime states\n"
+                "⚙️ /config — Current configuration\n"
+                "📄 /exportar — Export trades\n"
+                "❓ /help — Show this help"
+            )
+
+        return f"Unknown command: {command}. Type /help for available commands."
 
     def _is_spam(self, key: str) -> bool:
         """Check if same alert was sent within anti-spam window."""

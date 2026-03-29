@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calibration Panel - Polymarket Bot</title>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+    <style>
+        :root { --bg: #0f172a; --card: #1e293b; --accent: #3b82f6; --green: #22c55e; --red: #ef4444; --yellow: #eab308; --text: #e2e8f0; --muted: #94a3b8; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 2rem; }
+        .card { background: var(--card); border-radius: 0.5rem; padding: 1.5rem; border: 1px solid #334155; margin-bottom: 1rem; }
+        h1 { font-size: 1.5rem; margin-bottom: 1.5rem; }
+        h2 { font-size: 1.1rem; margin-bottom: 1rem; color: var(--muted); }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-box { background: var(--bg); border-radius: 0.375rem; padding: 1rem; text-align: center; }
+        .stat-value { font-size: 1.5rem; font-weight: 700; }
+        .stat-label { font-size: 0.75rem; color: var(--muted); margin-top: 0.25rem; }
+        .warning { background: #422006; border: 1px solid var(--yellow); border-radius: 0.375rem; padding: 0.75rem; margin: 1rem 0; font-size: 0.85rem; color: var(--yellow); }
+        .form-group { margin-bottom: 1rem; }
+        .form-group label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.25rem; }
+        .form-group input[type="range"] { width: 100%; accent-color: var(--accent); }
+        .form-group .range-values { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--muted); }
+        .btn { padding: 0.5rem 1rem; border: none; border-radius: 0.375rem; cursor: pointer; font-weight: 500; }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-back { background: transparent; border: 1px solid #334155; color: var(--text); }
+        .nav { display: flex; gap: 1rem; margin-bottom: 2rem; }
+        .funnel { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+        .funnel-step { padding: 0.5rem 1rem; border-radius: 0.375rem; font-size: 0.85rem; }
+        .funnel-arrow { color: var(--muted); }
+        .semaphore { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 0.5rem; }
+        .semaphore.green { background: var(--green); }
+        .semaphore.yellow { background: var(--yellow); }
+        .semaphore.red { background: var(--red); }
+    </style>
+</head>
+<body x-data="calibration()" x-init="init()">
+    <div class="nav">
+        <a href="/"><button class="btn btn-back">Back to Dashboard</button></a>
+        <h1>Calibration Panel</h1>
+    </div>
+
+    <!-- Signal Funnel -->
+    <div class="card">
+        <h2>Signal Funnel - Last Cycle</h2>
+        <div class="stats-grid">
+            <div class="stat-box">
+                <div class="stat-value" x-text="cal.signals_detected || 0"></div>
+                <div class="stat-label">Detected</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" x-text="cal.rejected_spread || 0"></div>
+                <div class="stat-label">Rejected (Spread)</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" x-text="cal.rejected_zscore || 0"></div>
+                <div class="stat-label">Rejected (Z-Score)</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" x-text="cal.rejected_ai || 0"></div>
+                <div class="stat-label">Rejected (AI)</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" x-text="cal.rejected_liquidity || 0"></div>
+                <div class="stat-label">Rejected (Liquidity)</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" x-text="cal.passed_filters || 0"></div>
+                <div class="stat-label">Passed Filters</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" style="color: var(--green)" x-text="cal.executed || 0"></div>
+                <div class="stat-label">Executed</div>
+            </div>
+        </div>
+
+        <!-- Warnings -->
+        <template x-for="w in warnings" :key="w">
+            <div class="warning" x-text="w"></div>
+        </template>
+    </div>
+
+    <!-- Backtesting Results -->
+    <div class="card">
+        <h2>Backtesting Results</h2>
+        <div class="stats-grid">
+            <template x-for="bt in backtests" :key="bt.strategy">
+                <div class="stat-box">
+                    <div>
+                        <span class="semaphore" :class="bt.semaphore.toLowerCase()"></span>
+                        <strong x-text="bt.strategy"></strong>
+                    </div>
+                    <div style="font-size:0.8rem;margin-top:0.5rem">
+                        <p>Sharpe: <span x-text="bt.sharpe_ratio"></span></p>
+                        <p>Win Rate: <span x-text="(bt.win_rate * 100).toFixed(1) + '%'"></span></p>
+                        <p>Trades: <span x-text="bt.total_trades"></span></p>
+                    </div>
+                    <template x-for="f in bt.failure_reasons" :key="f">
+                        <p style="font-size:0.7rem;color:var(--red)" x-text="f"></p>
+                    </template>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- Threshold Adjustment -->
+    <div class="card">
+        <h2>Adjust Thresholds</h2>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+            <div class="form-group">
+                <label>Z-Score Threshold: <strong x-text="thresholds.zscore_threshold"></strong></label>
+                <input type="range" min="1.0" max="3.0" step="0.1" x-model.number="thresholds.zscore_threshold">
+                <div class="range-values"><span>1.0</span><span>3.0</span></div>
+            </div>
+            <div class="form-group">
+                <label>Max Spread %: <strong x-text="thresholds.max_spread_pct"></strong></label>
+                <input type="range" min="2.0" max="12.0" step="0.5" x-model.number="thresholds.max_spread_pct">
+                <div class="range-values"><span>2%</span><span>12%</span></div>
+            </div>
+            <div class="form-group">
+                <label>Sentiment Shift: <strong x-text="thresholds.sentiment_shift"></strong></label>
+                <input type="range" min="0.10" max="0.50" step="0.05" x-model.number="thresholds.sentiment_shift">
+                <div class="range-values"><span>0.10</span><span>0.50</span></div>
+            </div>
+            <div class="form-group">
+                <label>AI Confidence Min: <strong x-text="thresholds.ai_confidence_min"></strong></label>
+                <input type="range" min="0.30" max="0.90" step="0.05" x-model.number="thresholds.ai_confidence_min">
+                <div class="range-values"><span>0.30</span><span>0.90</span></div>
+            </div>
+            <div class="form-group">
+                <label>Trailing Stop %: <strong x-text="thresholds.trailing_pct"></strong></label>
+                <input type="range" min="2.0" max="10.0" step="0.5" x-model.number="thresholds.trailing_pct">
+                <div class="range-values"><span>2%</span><span>10%</span></div>
+            </div>
+            <div class="form-group">
+                <label>Position Size %: <strong x-text="thresholds.default_position_pct"></strong></label>
+                <input type="range" min="1.0" max="10.0" step="0.5" x-model.number="thresholds.default_position_pct">
+                <div class="range-values"><span>1%</span><span>10%</span></div>
+            </div>
+        </div>
+        <button class="btn btn-primary" @click="saveThresholds()" style="margin-top:1rem">Save Thresholds</button>
+        <span x-show="saveMsg" style="margin-left:1rem;color:var(--green);font-size:0.85rem" x-text="saveMsg"></span>
+    </div>
+
+    <script>
+    function calibration() {
+        return {
+            token: localStorage.getItem('jwt_token') || '',
+            cal: {}, warnings: [], backtests: [], saveMsg: '',
+            thresholds: {
+                zscore_threshold: 1.8, max_spread_pct: 6.0, sentiment_shift: 0.25,
+                ai_confidence_min: 0.60, trailing_pct: 5.0, default_position_pct: 5.0
+            },
+
+            headers() { return { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' }; },
+
+            async init() {
+                if (!this.token) { window.location = '/'; return; }
+                await this.refresh();
+            },
+
+            async refresh() {
+                try {
+                    const res = await fetch('/api/metrics/calibration', { headers: this.headers() });
+                    if (res.ok) this.cal = await res.json();
+
+                    // Check for warnings (>60% rejection from single filter)
+                    this.warnings = [];
+                    const total = this.cal.signals_detected || 1;
+                    if ((this.cal.rejected_spread || 0) / total > 0.6)
+                        this.warnings.push('Over 60% of signals rejected by spread filter. Consider increasing max_spread_pct.');
+                    if ((this.cal.rejected_zscore || 0) / total > 0.6)
+                        this.warnings.push('Over 60% of signals rejected by z-score. Consider lowering zscore_threshold.');
+                    if ((this.cal.rejected_ai || 0) / total > 0.6)
+                        this.warnings.push('Over 60% of signals rejected by AI. Consider lowering ai_confidence_min.');
+                    if ((this.cal.rejected_liquidity || 0) / total > 0.6)
+                        this.warnings.push('Over 60% of signals rejected by liquidity. Consider lowering min_depth_usd.');
+
+                    // Fetch backtests
+                    for (const s of ['mean_reversion', 'momentum']) {
+                        const r = await fetch('/api/backtest/' + s, { headers: this.headers() });
+                        if (r.ok) {
+                            const data = await r.json();
+                            if (data.strategy) this.backtests.push(data);
+                        }
+                    }
+                } catch(e) { console.error(e); }
+            },
+
+            async saveThresholds() {
+                for (const [key, value] of Object.entries(this.thresholds)) {
+                    await fetch('/api/config', {
+                        method: 'POST', headers: this.headers(),
+                        body: JSON.stringify({ key, value })
+                    });
+                }
+                this.saveMsg = 'Saved!';
+                setTimeout(() => this.saveMsg = '', 3000);
+            }
+        };
+    }
+    </script>
+</body>
+</html>
