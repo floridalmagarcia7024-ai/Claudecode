@@ -886,6 +886,7 @@ class TradingEngine:
         """Get current engine status for health check."""
         positions = await self._state.get_active_positions()
         daily_pnl = await self._state.get_daily_pnl()
+        balance = await self._get_balance()
         now = datetime.now(timezone.utc).isoformat()
 
         status = {
@@ -893,6 +894,7 @@ class TradingEngine:
             "mode": "paper" if settings.paper_mode else "real",
             "degraded": self._degraded,
             "uptime_s": round(self.uptime_seconds),
+            "balance": round(balance, 2),
             "positions": len(positions),
             "daily_pnl": round(daily_pnl.total_pnl, 2),
             "daily_trades": daily_pnl.num_trades,

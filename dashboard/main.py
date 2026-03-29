@@ -426,7 +426,7 @@ async def api_config_update(
         "zscore_threshold", "max_spread_pct", "sentiment_shift",
         "ai_confidence_min", "min_daily_volume", "trailing_pct",
         "breakeven_trigger", "max_slippage_pct", "default_position_pct",
-        "scan_interval_seconds",
+        "scan_interval_seconds", "paper_initial_balance", "paper_mode",
     }
     if body.key not in allowed_keys:
         raise HTTPException(status_code=400, detail=f"Key '{body.key}' not configurable")
