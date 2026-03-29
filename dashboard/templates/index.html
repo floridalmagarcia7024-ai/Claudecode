@@ -82,7 +82,7 @@
                 </div>
                 <div class="status-item">
                     <span class="status-label">Balance</span>
-                    <span class="status-value" x-text="'$' + (metrics.total_pnl || 0).toFixed(2)"></span>
+                    <span class="status-value" x-text="'$' + (status.balance != null ? status.balance.toFixed(2) : '0.00')"></span>
                 </div>
                 <div class="status-item">
                     <span class="status-label">PnL Today</span>
