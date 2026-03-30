@@ -142,9 +142,9 @@ class PolymarketClient:
             except Exception as exc:
                 last_exc = exc
                 
-                # ¡Esta es la condición clave para abortar rápido y no perder 40 segundos!
+                # ¡Condición ampliada! Ahora aborta rápido tanto si no existe (404) como si el token está vacío/inválido (400)
                 error_str = str(exc)
-                if "No orderbook exists" in error_str or "404" in error_str:
+                if "No orderbook exists" in error_str or "404" in error_str or "Invalid token id" in error_str or "400" in error_str:
                     raise exc
 
                 logger.warning(
