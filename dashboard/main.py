@@ -1,13 +1,22 @@
+
+---
+
+## Archivo 2: `dashboard/main.py` (reemplazar completo)
+
+```python
 """Dashboard FastAPI app with JWT auth, rate limiting, and CORS (Module 17).
 
-Provides REST API endpoints and serves Jinja2 dashboard templates.
-Phase 4: shadow performance, optimizer approve/reject, stress test endpoints.
+Phase 5 additions: log ring buffer, /api/logs, /api/logs/stream,
+/api/settings GET, /api/settings/credentials POST, /api/mode/toggle POST.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import secrets
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -27,7 +36,20 @@ from config import settings
 
 logger = structlog.get_logger(__name__)
 
-# JWT config
+# ── Log Ring Buffer ────────────────────────────────────────────
+_log_buffer: deque = deque(maxlen=500)
+
+
+def capture_log(entry: dict) -> None:
+    """Append a structured log entry to the in-memory ring buffer."""
+    _log_buffer.append({
+        "time": str(entry.get("timestamp", ""))[:19].replace("T", " "),
+        "level": str(entry.get("level", "info")).upper(),
+        "msg": str(entry.get("event", "")),
+    })
+
+
+# ── JWT config ─────────────────────────────────────────────────
 JWT_SECRET = os.environ.get("JWT_SECRET", secrets.token_urlsafe(32))
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
@@ -44,14 +66,12 @@ templates = Jinja2Templates(directory=templates_dir)
 
 
 def create_dashboard_app() -> FastAPI:
-    """Create and configure the dashboard FastAPI application."""
     app = FastAPI(
         title="Polymarket Bot Dashboard",
         version="3.0.0",
         docs_url="/api/docs",
     )
 
-    # Rate limiting
     app.state.limiter = limiter
 
     @app.exception_handler(RateLimitExceeded)
@@ -62,7 +82,6 @@ def create_dashboard_app() -> FastAPI:
             media_type="application/json",
         )
 
-    # CORS
     allowed_origins = os.environ.get("CORS_ORIGINS", "").split(",")
     allowed_origins = [o.strip() for o in allowed_origins if o.strip()]
     if not allowed_origins:
@@ -76,7 +95,6 @@ def create_dashboard_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type"],
     )
 
-    # Security headers middleware
     @app.middleware("http")
     async def add_security_headers(request: Request, call_next):
         response = await call_next(request)
@@ -101,7 +119,6 @@ _walk_forward = None
 _smart_exit = None
 _journal = None
 _regime_detector = None
-# Phase 4 components
 _optimizer = None
 _shadow_manager = None
 _stress_tester = None
@@ -113,25 +130,12 @@ _audit_logger = None
 
 
 def set_components(
-    engine=None,
-    state=None,
-    collector=None,
-    backtester=None,
-    walk_forward=None,
-    smart_exit=None,
-    journal=None,
-    regime_detector=None,
-    # Phase 4
-    optimizer=None,
-    shadow_manager=None,
-    stress_tester=None,
-    cross_market=None,
-    order_flow=None,
-    liquidity_profile=None,
-    ab_manager=None,
-    audit_logger=None,
+    engine=None, state=None, collector=None, backtester=None,
+    walk_forward=None, smart_exit=None, journal=None, regime_detector=None,
+    optimizer=None, shadow_manager=None, stress_tester=None,
+    cross_market=None, order_flow=None, liquidity_profile=None,
+    ab_manager=None, audit_logger=None,
 ):
-    """Wire components from main app startup."""
     global _engine, _state, _collector, _backtester, _walk_forward
     global _smart_exit, _journal, _regime_detector
     global _optimizer, _shadow_manager, _stress_tester, _cross_market
@@ -154,7 +158,7 @@ def set_components(
     _audit_logger = audit_logger
 
 
-# ── JWT Auth ─────────────────────────────────────────────────────
+# ── Pydantic Models ───────────────────────────────────────────
 
 
 class LoginRequest(BaseModel):
@@ -165,6 +169,19 @@ class LoginRequest(BaseModel):
 class ConfigUpdate(BaseModel):
     key: str
     value: Any
+
+
+class CredentialsUpdate(BaseModel):
+    polymarket_api_key: str = ""
+    polymarket_secret: str = ""
+    polymarket_private_key: str = ""
+    wallet_address: str = ""
+    groq_api_key: str = ""
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+
+
+# ── JWT Auth ──────────────────────────────────────────────────
 
 
 def create_jwt_token(subject: str) -> str:
@@ -193,13 +210,12 @@ async def get_current_user(
     return verify_jwt_token(credentials.credentials)
 
 
-# ── Auth Endpoints ───────────────────────────────────────────────
+# ── Auth ──────────────────────────────────────────────────────
 
 
 @dashboard_app.post("/api/auth/login")
 @limiter.limit("10/minute")
 async def login(request: Request, body: LoginRequest):
-    """Login and get JWT token."""
     expected_user = os.environ.get("DASHBOARD_USER", "admin")
     expected_pass = os.environ.get("DASHBOARD_PASS", "polymarket")
     if body.username == expected_user and body.password == expected_pass:
@@ -208,12 +224,11 @@ async def login(request: Request, body: LoginRequest):
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 
-# ── API Endpoints (Module 17) ────────────────────────────────────
+# ── Health / Status ───────────────────────────────────────────
 
 
 @dashboard_app.get("/health")
 async def health():
-    """Watchdog health check."""
     if _engine:
         return await _engine.get_status()
     return {"status": "initializing"}
@@ -222,7 +237,6 @@ async def health():
 @dashboard_app.get("/api/status")
 @limiter.limit("30/minute")
 async def api_status(request: Request, user: dict = Depends(get_current_user)):
-    """Bot status with regime."""
     if not _engine:
         raise HTTPException(status_code=503, detail="Engine not running")
     status = await _engine.get_status()
@@ -231,22 +245,22 @@ async def api_status(request: Request, user: dict = Depends(get_current_user)):
     return status
 
 
+# ── Bot Control ───────────────────────────────────────────────
+
+
 @dashboard_app.post("/api/start")
 @limiter.limit("5/minute")
 async def api_start(request: Request, user: dict = Depends(get_current_user)):
-    """Start the bot."""
     if not _engine:
         raise HTTPException(status_code=503, detail="Engine not available")
     if _engine.is_running:
         return {"status": "already_running"}
-    # Engine start is managed by main.py lifespan
     return {"status": "start_requested"}
 
 
 @dashboard_app.post("/api/stop")
 @limiter.limit("5/minute")
 async def api_stop(request: Request, user: dict = Depends(get_current_user)):
-    """Stop the bot."""
     if not _engine:
         raise HTTPException(status_code=503, detail="Engine not available")
     if not _engine.is_running:
@@ -255,10 +269,22 @@ async def api_stop(request: Request, user: dict = Depends(get_current_user)):
     return {"status": "stopped"}
 
 
+@dashboard_app.post("/api/mode/toggle")
+@limiter.limit("5/minute")
+async def api_mode_toggle(request: Request, user: dict = Depends(get_current_user)):
+    """Toggle between paper and real trading mode."""
+    settings.paper_mode = not settings.paper_mode
+    mode = "paper" if settings.paper_mode else "real"
+    logger.warning("mode_toggled", mode=mode, user=user.get("sub"))
+    return {"paper_mode": settings.paper_mode, "mode": mode}
+
+
+# ── Positions & Trades ────────────────────────────────────────
+
+
 @dashboard_app.get("/api/positions")
 @limiter.limit("30/minute")
 async def api_positions(request: Request, user: dict = Depends(get_current_user)):
-    """Active positions with trailing state."""
     if not _state:
         return []
     positions = await _state.get_active_positions()
@@ -285,10 +311,8 @@ async def api_positions(request: Request, user: dict = Depends(get_current_user)
 async def api_close_position(
     position_id: int, request: Request, user: dict = Depends(get_current_user)
 ):
-    """Manually close a position using SmartExit."""
     if not _state:
         raise HTTPException(status_code=503, detail="State not available")
-
     position = await _state.get_position_by_id(position_id)
     if not position:
         raise HTTPException(status_code=404, detail="Position not found")
@@ -320,7 +344,6 @@ async def api_trades(
     strategy: str | None = None,
     user: dict = Depends(get_current_user),
 ):
-    """Trade history with optional filters."""
     if not _state:
         return []
     trades = await _state.get_trade_history(limit=limit)
@@ -345,10 +368,12 @@ async def api_trades(
     return result
 
 
+# ── Metrics & Calibration ─────────────────────────────────────
+
+
 @dashboard_app.get("/api/metrics")
 @limiter.limit("30/minute")
 async def api_metrics(request: Request, user: dict = Depends(get_current_user)):
-    """PnL, Sharpe, MaxDD, win rate."""
     if not _state:
         raise HTTPException(status_code=503, detail="State not available")
 
@@ -359,7 +384,6 @@ async def api_metrics(request: Request, user: dict = Depends(get_current_user)):
     total_pnl = sum(t.pnl_usd for t in trades)
     pnls = [t.pnl_usd for t in trades]
 
-    # Sharpe
     import math
     import statistics as stat_mod
     sharpe = 0.0
@@ -369,12 +393,10 @@ async def api_metrics(request: Request, user: dict = Depends(get_current_user)):
         if std_r > 0:
             sharpe = mean_r / std_r * math.sqrt(365)
 
-    # Max drawdown
     equity = [0.0]
     for p in pnls:
         equity.append(equity[-1] + p)
-    peak = 0.0
-    max_dd = 0.0
+    peak = max_dd = 0.0
     for v in equity:
         peak = max(peak, v)
         max_dd = max(max_dd, peak - v)
@@ -395,25 +417,18 @@ async def api_metrics(request: Request, user: dict = Depends(get_current_user)):
 @dashboard_app.get("/api/metrics/calibration")
 @limiter.limit("30/minute")
 async def api_calibration(request: Request, user: dict = Depends(get_current_user)):
-    """Signal calibration stats for the current day."""
-    # This returns calibration data tracked by the engine
     if not _engine:
         return {"signals_detected": 0, "signals_executed": 0}
-
-    # Pull from engine's calibration tracker if available
     cal = getattr(_engine, "_calibration_stats", None)
     if cal:
         return cal
-
     return {
-        "signals_detected": 0,
-        "rejected_spread": 0,
-        "rejected_zscore": 0,
-        "rejected_ai": 0,
-        "rejected_liquidity": 0,
-        "passed_filters": 0,
-        "executed": 0,
+        "signals_detected": 0, "rejected_spread": 0, "rejected_zscore": 0,
+        "rejected_ai": 0, "rejected_liquidity": 0, "passed_filters": 0, "executed": 0,
     }
+
+
+# ── Config & Settings ─────────────────────────────────────────
 
 
 @dashboard_app.post("/api/config")
@@ -421,16 +436,15 @@ async def api_calibration(request: Request, user: dict = Depends(get_current_use
 async def api_config_update(
     request: Request, body: ConfigUpdate, user: dict = Depends(get_current_user)
 ):
-    """Update a configuration value with validation."""
     allowed_keys = {
         "zscore_threshold", "max_spread_pct", "sentiment_shift",
         "ai_confidence_min", "min_daily_volume", "trailing_pct",
         "breakeven_trigger", "max_slippage_pct", "default_position_pct",
         "scan_interval_seconds", "paper_initial_balance", "paper_mode",
+        "max_daily_loss_pct",
     }
     if body.key not in allowed_keys:
         raise HTTPException(status_code=400, detail=f"Key '{body.key}' not configurable")
-
     try:
         current = getattr(settings, body.key)
         setattr(settings, body.key, type(current)(body.value))
@@ -439,24 +453,147 @@ async def api_config_update(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@dashboard_app.get("/api/settings")
+@limiter.limit("30/minute")
+async def api_get_settings(request: Request, user: dict = Depends(get_current_user)):
+    """Return current settings. Credentials are masked for security."""
+    def mask(val: str) -> str:
+        if not val:
+            return ""
+        return val[:4] + "****" if len(val) > 4 else "****"
+
+    return {
+        "paper_mode": settings.paper_mode,
+        "paper_initial_balance": settings.paper_initial_balance,
+        "default_position_pct": settings.default_position_pct,
+        "max_daily_loss_pct": settings.max_daily_loss_pct,
+        "trailing_pct": settings.trailing_pct,
+        "zscore_threshold": settings.zscore_threshold,
+        "scan_interval_seconds": settings.scan_interval_seconds,
+        # Credentials: show masked or empty
+        "has_polymarket_key": bool(settings.polymarket_api_key),
+        "has_groq_key": bool(settings.groq_api_key),
+        "has_telegram": bool(settings.telegram_bot_token),
+        "wallet_address_masked": mask(settings.wallet_address),
+        "telegram_chat_id": settings.telegram_chat_id,
+    }
+
+
+@dashboard_app.post("/api/settings/credentials")
+@limiter.limit("5/minute")
+async def api_save_credentials(
+    request: Request, body: CredentialsUpdate, user: dict = Depends(get_current_user)
+):
+    """Persist API credentials to .env file and apply to current session.
+    Only non-empty fields are updated — existing values are preserved.
+    """
+    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+
+    # Read existing .env
+    existing: dict[str, str] = {}
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    existing[k.strip()] = v.strip()
+
+    # Map of env key → (new value, settings attribute)
+    updates = {
+        "POLYMARKET_API_KEY": (body.polymarket_api_key, "polymarket_api_key"),
+        "POLYMARKET_SECRET": (body.polymarket_secret, "polymarket_secret"),
+        "POLYMARKET_PRIVATE_KEY": (body.polymarket_private_key, "polymarket_private_key"),
+        "WALLET_ADDRESS": (body.wallet_address, "wallet_address"),
+        "GROQ_API_KEY": (body.groq_api_key, "groq_api_key"),
+        "TELEGRAM_BOT_TOKEN": (body.telegram_bot_token, "telegram_bot_token"),
+        "TELEGRAM_CHAT_ID": (body.telegram_chat_id, "telegram_chat_id"),
+    }
+
+    changed = []
+    for env_key, (new_val, attr) in updates.items():
+        if new_val:  # Only update if user provided a value
+            existing[env_key] = new_val
+            setattr(settings, attr, new_val)
+            changed.append(env_key)
+
+    # Write updated .env
+    try:
+        lines = [f"{k}={v}" for k, v in existing.items()]
+        with open(env_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot write .env: {exc}")
+
+    return {
+        "status": "saved",
+        "updated_fields": changed,
+        "note": "Restart required for API connection changes to take effect.",
+    }
+
+
+# ── Log Stream ────────────────────────────────────────────────
+
+
+@dashboard_app.get("/api/logs")
+@limiter.limit("60/minute")
+async def api_logs(
+    request: Request,
+    limit: int = 100,
+    user: dict = Depends(get_current_user),
+):
+    """Return recent log entries from the in-memory ring buffer."""
+    entries = list(_log_buffer)
+    return list(reversed(entries[-limit:]))
+
+
+@dashboard_app.get("/api/logs/stream")
+async def api_logs_stream(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+):
+    """Server-Sent Events stream of live log entries."""
+    if not credentials:
+        return Response(status_code=401)
+    try:
+        verify_jwt_token(credentials.credentials)
+    except HTTPException:
+        return Response(status_code=401)
+
+    async def event_generator():
+        last_index = len(_log_buffer)
+        while True:
+            if await request.is_disconnected():
+                break
+            current = list(_log_buffer)
+            if len(current) > last_index:
+                for entry in current[last_index:]:
+                    yield f"data: {json.dumps(entry)}\n\n"
+                last_index = len(current)
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+# ── Backtest & Regime ─────────────────────────────────────────
+
+
 @dashboard_app.get("/api/backtest/{strategy}")
 @limiter.limit("10/minute")
 async def api_backtest(
     strategy: str, request: Request, user: dict = Depends(get_current_user)
 ):
-    """Get backtest result for a strategy."""
     if not _backtester:
         raise HTTPException(status_code=503, detail="Backtester not available")
-
     result = _backtester.get_result(strategy)
     if result:
         return result.to_dict()
-
-    # Run backtest if data available
     if _collector:
-        # Get all market snapshots
         from api.data_collector import DataCollector
-        snapshots = []
         try:
             cursor = await _collector.db.execute(
                 "SELECT DISTINCT market_id FROM market_snapshots LIMIT 1"
@@ -464,14 +601,11 @@ async def api_backtest(
             row = await cursor.fetchone()
             if row:
                 history = await _collector.get_history(row[0], days=30)
-                snapshots = history
+                if history:
+                    bt_result = await _backtester.run_backtest(strategy, history)
+                    return bt_result.to_dict()
         except Exception:
             pass
-
-        if snapshots:
-            bt_result = await _backtester.run_backtest(strategy, snapshots)
-            return bt_result.to_dict()
-
     return {"strategy": strategy, "status": "no_data"}
 
 
@@ -480,7 +614,6 @@ async def api_backtest(
 async def api_regime(
     market_id: str, request: Request, user: dict = Depends(get_current_user)
 ):
-    """Get current regime for a market."""
     if not _regime_detector:
         return {"market_id": market_id, "regime": "unknown"}
     regime = _regime_detector.get_regime(market_id)
@@ -490,18 +623,13 @@ async def api_regime(
 @dashboard_app.get("/api/export/trades")
 @limiter.limit("5/minute")
 async def api_export_trades(
-    request: Request,
-    format: str = "csv",
-    user: dict = Depends(get_current_user),
+    request: Request, format: str = "csv", user: dict = Depends(get_current_user)
 ):
-    """Export trade history as CSV."""
     if not _journal:
         raise HTTPException(status_code=503, detail="Journal not available")
-
     csv_data = await _journal.export_csv()
     if not csv_data:
         return Response(content="No trades to export", media_type="text/plain")
-
     return Response(
         content=csv_data,
         media_type="text/csv",
@@ -509,15 +637,12 @@ async def api_export_trades(
     )
 
 
-# ── Phase 4 API Endpoints ────────────────────────────────────────
+# ── Phase 4 Endpoints ─────────────────────────────────────────
 
 
 @dashboard_app.post("/api/optimizer/approve")
 @limiter.limit("5/minute")
-async def api_optimizer_approve(
-    request: Request, user: dict = Depends(get_current_user)
-):
-    """Approve proposed optimizer parameters."""
+async def api_optimizer_approve(request: Request, user: dict = Depends(get_current_user)):
     if not _optimizer:
         raise HTTPException(status_code=503, detail="Optimizer not available")
     result = _optimizer.approve_params()
@@ -528,10 +653,7 @@ async def api_optimizer_approve(
 
 @dashboard_app.post("/api/optimizer/reject")
 @limiter.limit("5/minute")
-async def api_optimizer_reject(
-    request: Request, user: dict = Depends(get_current_user)
-):
-    """Reject proposed optimizer parameters."""
+async def api_optimizer_reject(request: Request, user: dict = Depends(get_current_user)):
     if not _optimizer:
         raise HTTPException(status_code=503, detail="Optimizer not available")
     result = _optimizer.reject_params()
@@ -542,10 +664,7 @@ async def api_optimizer_reject(
 
 @dashboard_app.get("/api/optimizer/status")
 @limiter.limit("30/minute")
-async def api_optimizer_status(
-    request: Request, user: dict = Depends(get_current_user)
-):
-    """Get optimizer status and current proposal."""
+async def api_optimizer_status(request: Request, user: dict = Depends(get_current_user)):
     if not _optimizer:
         return {"status": "not_configured"}
     return _optimizer.get_status_dict()
@@ -553,10 +672,7 @@ async def api_optimizer_status(
 
 @dashboard_app.get("/api/shadow/performance")
 @limiter.limit("30/minute")
-async def api_shadow_performance(
-    request: Request, user: dict = Depends(get_current_user)
-):
-    """Get shadow bot performance for comparison with real bot."""
+async def api_shadow_performance(request: Request, user: dict = Depends(get_current_user)):
     if not _shadow_manager:
         return []
     return _shadow_manager.get_performance()
@@ -564,10 +680,7 @@ async def api_shadow_performance(
 
 @dashboard_app.get("/api/stress/latest")
 @limiter.limit("30/minute")
-async def api_stress_latest(
-    request: Request, user: dict = Depends(get_current_user)
-):
-    """Get latest stress test report for portfolio health section."""
+async def api_stress_latest(request: Request, user: dict = Depends(get_current_user)):
     if not _stress_tester or not _stress_tester.last_report:
         return {"status": "no_data"}
     return _stress_tester.last_report.to_dict()
@@ -575,10 +688,7 @@ async def api_stress_latest(
 
 @dashboard_app.get("/api/cross-market/divergences")
 @limiter.limit("30/minute")
-async def api_divergences(
-    request: Request, user: dict = Depends(get_current_user)
-):
-    """Get current cross-market divergence signals."""
+async def api_divergences(request: Request, user: dict = Depends(get_current_user)):
     if not _cross_market:
         return []
     return _cross_market.get_recent_signals()
@@ -586,10 +696,7 @@ async def api_divergences(
 
 @dashboard_app.get("/api/order-flow/whales")
 @limiter.limit("30/minute")
-async def api_whale_summary(
-    request: Request, user: dict = Depends(get_current_user)
-):
-    """Get whale pressure summary per market."""
+async def api_whale_summary(request: Request, user: dict = Depends(get_current_user)):
     if not _order_flow:
         return {}
     return _order_flow.get_whale_summary()
@@ -597,10 +704,7 @@ async def api_whale_summary(
 
 @dashboard_app.get("/api/order-flow/manipulation")
 @limiter.limit("30/minute")
-async def api_manipulation_events(
-    request: Request, user: dict = Depends(get_current_user)
-):
-    """Get recent manipulation detection events."""
+async def api_manipulation_events(request: Request, user: dict = Depends(get_current_user)):
     if not _order_flow:
         return []
     return _order_flow.get_manipulation_events()
@@ -611,7 +715,6 @@ async def api_manipulation_events(
 async def api_liquidity_profile(
     market_id: str, request: Request, user: dict = Depends(get_current_user)
 ):
-    """Get hourly liquidity profile for a market."""
     if not _liquidity_profile:
         return {"market_id": market_id, "status": "not_configured"}
     return _liquidity_profile.get_profile_dict(market_id)
@@ -619,10 +722,7 @@ async def api_liquidity_profile(
 
 @dashboard_app.get("/api/ab-test/status")
 @limiter.limit("30/minute")
-async def api_ab_status(
-    request: Request, user: dict = Depends(get_current_user)
-):
-    """Get A/B test + multi-wallet status."""
+async def api_ab_status(request: Request, user: dict = Depends(get_current_user)):
     if not _ab_manager:
         return {"ab_test_active": False, "wallets": 0}
     return _ab_manager.get_status()
@@ -630,10 +730,7 @@ async def api_ab_status(
 
 @dashboard_app.get("/api/audit/summary")
 @limiter.limit("30/minute")
-async def api_audit_summary(
-    request: Request, user: dict = Depends(get_current_user)
-):
-    """Get audit log summary."""
+async def api_audit_summary(request: Request, user: dict = Depends(get_current_user)):
     if not _audit_logger:
         return {"total_entries": 0}
     return await _audit_logger.get_summary()
@@ -648,28 +745,25 @@ async def api_audit_entries(
     limit: int = 50,
     user: dict = Depends(get_current_user),
 ):
-    """Query audit log entries."""
     if not _audit_logger:
         return []
     return await _audit_logger.get_entries(action=action, market_id=market_id, limit=limit)
 
 
-# ── Dashboard HTML Routes ────────────────────────────────────────
+# ── HTML Pages ────────────────────────────────────────────────
 
 
 @dashboard_app.get("/", response_class=HTMLResponse)
 async def dashboard_index(request: Request):
-    """Main dashboard page."""
     return templates.TemplateResponse(request, "index.html")
 
 
 @dashboard_app.get("/calibration", response_class=HTMLResponse)
 async def dashboard_calibration(request: Request):
-    """Calibration panel page."""
     return templates.TemplateResponse(request, "calibration.html")
 
 
 @dashboard_app.get("/onboarding", response_class=HTMLResponse)
 async def dashboard_onboarding(request: Request):
-    """Onboarding wizard page."""
     return templates.TemplateResponse(request, "onboarding.html")
+
