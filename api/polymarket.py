@@ -170,6 +170,14 @@ class PolymarketClient:
             raw = await self._call_with_retry(self._client.get_markets, next_cursor="")
             markets: list[MarketData] = []
             data = raw if isinstance(raw, list) else raw.get("data", [])
+            
+            # ---> INICIO DEL FILTRO DE VOLUMEN <---
+            # 1. Solo nos quedamos con mercados que hayan movido más de $5,000 USD hoy
+            data = [m for m in data if float(m.get("volume_num_24hr", 0.0)) > 5000.0]
+            # 2. Los ordenamos para escanear primero los más calientes (mayor volumen)
+            data.sort(key=lambda x: float(x.get("volume_num_24hr", 0.0)), reverse=True)
+            # ---> FIN DEL FILTRO <---
+
             for item in data[:limit]:
                 tokens = item.get("tokens", [])
                 token_ids = [t.get("token_id", "") for t in tokens]
