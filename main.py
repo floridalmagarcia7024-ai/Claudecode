@@ -1,10 +1,6 @@
 """FastAPI entry point for the Polymarket Trading Bot.
 
-Provides a /health endpoint and starts the trading engine as a background task.
-Phase 2: integrates regime detector, news feed, health monitor, telegram, event calendar.
-Phase 3: integrates dashboard, backtesting, smart exit, journal, full telegram commands.
-Phase 4: integrates optimizer, shadow bots, stress testing, cross-market, order flow,
-         liquidity profile, A/B testing, audit log.
+Phase 5 additions: log ring buffer processor, 3 new strategies.
 """
 
 from __future__ import annotations
@@ -27,7 +23,7 @@ from core.paper import PaperTradingEngine
 from core.regime import MarketRegimeDetector
 from core.risk import RiskManager
 from core.state import PositionManager
-from dashboard.main import dashboard_app, set_components
+from dashboard.main import capture_log, dashboard_app, set_components
 from execution.smart_exit import SmartExitManager
 from intelligence.ai_analyzer import AIAnalyzer
 from intelligence.event_calendar import CalendarEvent, EventCalendar
@@ -45,7 +41,22 @@ from intelligence.liquidity_profile import LiquidityProfile
 from ab_test.ab_manager import ABTestManager
 from strategies.mean_reversion import MeanReversionStrategy
 from strategies.momentum import MomentumStrategy
+from strategies.news_surge import NewsSurgeStrategy
+from strategies.value_bet import ValueBetStrategy
+from strategies.liquidity_squeeze import LiquiditySqueezeStrategy
 from telegram_bot.bot import TelegramAlertBot
+
+
+# ── Structlog Processor — captures logs to dashboard ring buffer ──
+
+def _capture_log_processor(logger, method, event_dict):
+    """Send log entries to the dashboard in-memory ring buffer."""
+    try:
+        capture_log(dict(event_dict))
+    except Exception:
+        pass
+    return event_dict
+
 
 # ── Logging Setup ──────────────────────────────────────────────
 
@@ -54,6 +65,7 @@ structlog.configure(
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
+        _capture_log_processor,
         structlog.dev.ConsoleRenderer() if settings.paper_mode else structlog.processors.JSONRenderer(),
     ],
     wrapper_class=structlog.make_filtering_bound_logger(
@@ -80,10 +92,9 @@ async def lifespan(app: FastAPI):
     logger.info(
         "bot_starting",
         mode="paper" if settings.paper_mode else "real",
-        version="4.0.0",
+        version="5.0.0",
     )
 
-    # Initialize components
     try:
         clob_client = create_clob_client()
     except Exception as exc:
@@ -101,13 +112,11 @@ async def lifespan(app: FastAPI):
     ai = AIAnalyzer()
     paper = PaperTradingEngine(state)
 
-    # Phase 2 components
     regime_detector = MarketRegimeDetector()
     news_feed = NewsFeedPipeline(ai_analyzer=ai, feeds=settings.rss_feeds)
     telegram_bot = TelegramAlertBot()
     event_calendar = EventCalendar()
 
-    # Load configured events
     for evt_dict in settings.event_calendar:
         try:
             event_calendar.add_event(CalendarEvent(
@@ -122,7 +131,6 @@ async def lifespan(app: FastAPI):
 
     health_monitor = HealthMonitor(client, state) if client else None  # type: ignore[arg-type]
 
-    # Phase 3 components
     backtester = Backtester()
     walk_forward = WalkForwardOptimizer()
     smart_exit = SmartExitManager(client=client, state=state)
@@ -130,7 +138,6 @@ async def lifespan(app: FastAPI):
     await journal.initialize()
     ai_journal = AIJournalAnalyzer()
 
-    # Phase 4 components
     auto_optimizer = AutoOptimizer(backtester=backtester, walk_forward=walk_forward)
     shadow_manager = ShadowBotManager()
     stress_tester = StressTester(max_daily_loss_pct=settings.max_daily_loss_pct)
@@ -141,15 +148,17 @@ async def lifespan(app: FastAPI):
     audit_logger = AuditLogger()
     await audit_logger.initialize()
 
-    # Strategies: mean reversion + momentum
+    # All 5 strategies
     strategies = [
         MeanReversionStrategy(ai_analyzer=ai),
         MomentumStrategy(regime_detector=regime_detector),
+        NewsSurgeStrategy(ai_analyzer=ai),
+        ValueBetStrategy(ai_analyzer=ai),
+        LiquiditySqueezeStrategy(),
     ]
 
-    # Wire dashboard components
     set_components(
-        engine=None,  # Set after engine creation
+        engine=None,
         state=state,
         collector=collector,
         backtester=backtester,
@@ -180,7 +189,6 @@ async def lifespan(app: FastAPI):
             health_monitor=health_monitor,
             telegram_bot=telegram_bot,
             event_calendar=event_calendar,
-            # Phase 4
             optimizer=auto_optimizer,
             shadow_manager=shadow_manager,
             stress_tester=stress_tester,
@@ -189,13 +197,11 @@ async def lifespan(app: FastAPI):
             liquidity_profile=liquidity_profiler,
         )
 
-        # Attach Phase 3 components to engine
         engine._smart_exit = smart_exit  # type: ignore[attr-defined]
         engine._journal = journal  # type: ignore[attr-defined]
         engine._ai_journal = ai_journal  # type: ignore[attr-defined]
         engine._backtester = backtester  # type: ignore[attr-defined]
 
-        # Update dashboard engine reference
         set_components(
             engine=engine,
             state=state,
@@ -215,23 +221,13 @@ async def lifespan(app: FastAPI):
             audit_logger=audit_logger,
         )
 
-        # Phase 3: Set up full telegram callbacks (Module 19)
         async def _get_trades():
             trades = await state.get_trade_history(limit=10)
-            return [
-                {
-                    "market_id": t.market_id,
-                    "pnl_usd": t.pnl_usd,
-                    "strategy": t.strategy,
-                    "direction": t.direction,
-                }
-                for t in trades
-            ]
+            return [{"market_id": t.market_id, "pnl_usd": t.pnl_usd, "strategy": t.strategy, "direction": t.direction} for t in trades]
 
         async def _get_metrics():
             import math
             import statistics as stat_mod
-
             trades = await state.get_trade_history(limit=10000)
             daily_pnl = await state.get_daily_pnl()
             stats = await state.get_trade_stats()
@@ -249,26 +245,15 @@ async def lifespan(app: FastAPI):
             for v in equity:
                 peak = max(peak, v)
                 max_dd = max(max_dd, peak - v)
-            return {
-                "total_pnl": sum(pnls),
-                "daily_pnl": daily_pnl.total_pnl,
-                "win_rate": stats["win_rate"],
-                "sharpe_ratio": sharpe,
-                "max_drawdown": max_dd,
-                "total_trades": len(trades),
-            }
+            return {"total_pnl": sum(pnls), "daily_pnl": daily_pnl.total_pnl, "win_rate": stats["win_rate"], "sharpe_ratio": sharpe, "max_drawdown": max_dd, "total_trades": len(trades)}
 
         async def _get_calibration():
             cal = getattr(engine, "_calibration_stats", None)
-            return cal or {
-                "signals_detected": 0, "rejected_spread": 0,
-                "rejected_zscore": 0, "rejected_ai": 0,
-                "rejected_liquidity": 0, "passed_filters": 0, "executed": 0,
-            }
+            return cal or {"signals_detected": 0, "rejected_spread": 0, "rejected_zscore": 0, "rejected_ai": 0, "rejected_liquidity": 0, "passed_filters": 0, "executed": 0}
 
         async def _get_backtest():
             results = []
-            for s in ["mean_reversion", "momentum"]:
+            for s in ["mean_reversion", "momentum", "news_surge", "value_bet", "liquidity_squeeze"]:
                 r = backtester.get_result(s)
                 if r:
                     results.append(r.to_dict())
@@ -279,18 +264,8 @@ async def lifespan(app: FastAPI):
 
         async def _get_positions_dict():
             positions = await state.get_active_positions()
-            return [
-                {
-                    "market_id": p.market_id,
-                    "direction": p.direction,
-                    "size_usd": p.size_usd,
-                    "entry_price": p.entry_price,
-                    "trailing_state": p.trailing_state.value,
-                }
-                for p in positions
-            ]
+            return [{"market_id": p.market_id, "direction": p.direction, "size_usd": p.size_usd, "entry_price": p.entry_price, "trailing_state": p.trailing_state.value} for p in positions]
 
-        # Phase 4 telegram callback helpers
         async def _get_optimizer_status():
             return auto_optimizer.get_status_dict()
 
@@ -322,7 +297,6 @@ async def lifespan(app: FastAPI):
             export_cb=lambda: journal.export_csv(),
             start_cb=lambda: engine.start() if engine else None,
             stop_cb=lambda: engine.stop() if engine else None,
-            # Phase 4
             optimizer_cb=_get_optimizer_status,
             approve_params_cb=_approve_params,
             reject_params_cb=_reject_params,
@@ -331,20 +305,18 @@ async def lifespan(app: FastAPI):
             divergences_cb=_get_divergences,
         )
 
-        # Phase 2: Reconcile on restart (Module 13)
         if health_monitor and not settings.paper_mode:
             alerts = await health_monitor.reconcile_on_restart()
             for alert in alerts:
                 logger.warning("reconcile_alert", msg=alert)
 
         engine_task = asyncio.create_task(engine.start())
-        logger.info("engine_started")
+        logger.info("engine_started", strategies=[s.name for s in strategies])
     else:
-        logger.warning("engine_not_started", reason="no_api_client")
+        logger.warning("engine_not_started", reason="no_api_client — set PAPER_MODE=true or add API keys")
 
     yield
 
-    # Shutdown
     logger.info("bot_shutting_down")
     if engine:
         await engine.stop()
@@ -362,16 +334,11 @@ async def lifespan(app: FastAPI):
     logger.info("bot_shutdown_complete")
 
 
-# ── Main app mounts the dashboard ────────────────────────────────
-
-app = FastAPI(title="Polymarket Trading Bot", version="4.0.0", lifespan=lifespan)
+app = FastAPI(title="Polymarket Trading Bot", version="5.0.0", lifespan=lifespan)
 
 
-# Direct /health on the main app — guarantees Railway healthcheck works
-# even if the mounted sub-app is busy processing requests.
 @app.get("/health")
 async def main_health():
-    """Top-level healthcheck for Railway — always responds fast."""
     if engine:
         return {
             "status": "running" if engine.is_running else "stopped",
@@ -381,7 +348,6 @@ async def main_health():
     return {"status": "initializing"}
 
 
-# Mount the Phase 3 dashboard app (includes all API endpoints + HTML)
 app.mount("/", dashboard_app)
 
 
