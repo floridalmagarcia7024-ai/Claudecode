@@ -1,8 +1,3 @@
-
----
-
-## Archivo 2: `dashboard/main.py` (reemplazar completo)
-
 ```python
 """Dashboard FastAPI app with JWT auth, rate limiting, and CORS (Module 17).
 
