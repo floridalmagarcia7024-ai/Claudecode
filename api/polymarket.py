@@ -200,7 +200,12 @@ class PolymarketClient:
 
     async def get_orderbook(self, token_id: str) -> OrderBook:
         """Fetch order book for a specific token."""
-        raw = await self._call_with_retry(self._client.get_order_book, token_id)
+        try:
+            raw = await self._call_with_retry(self._client.get_order_book, token_id)
+        except Exception as exc:
+            # Si no existe el orderbook, devolvemos uno vacío para no romper la estrategia
+            logger.debug("orderbook_not_found", token_id=token_id, error=str(exc))
+            return OrderBook(token_id=token_id)
 
         bids = [
             OrderBookLevel(price=float(b.get("price", 0)), size=float(b.get("size", 0)))
