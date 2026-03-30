@@ -6,114 +6,209 @@
     <title>Polymarket Bot Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
-    <script src="https://unpkg.com/htmx.org@1.9"></script>
     <style>
-        :root { --bg: #0f172a; --card: #1e293b; --accent: #3b82f6; --green: #22c55e; --red: #ef4444; --yellow: #eab308; --text: #e2e8f0; --muted: #94a3b8; }
+        [x-cloak] { display: none !important; }
+        :root {
+            --bg: #0f172a; --card: #1e293b; --card2: #243048;
+            --accent: #3b82f6; --green: #22c55e; --red: #ef4444;
+            --yellow: #eab308; --text: #e2e8f0; --muted: #94a3b8;
+            --border: #334155;
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-        .header { background: var(--card); padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; }
-        .header h1 { font-size: 1.25rem; }
-        .status-bar { display: flex; gap: 2rem; font-size: 0.875rem; }
+
+        /* Header */
+        .header { background: var(--card); padding: 0.75rem 1.5rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); }
+        .header h1 { font-size: 1.1rem; font-weight: 700; }
+        .nav-links { display: flex; gap: 1rem; align-items: center; }
+        .nav-links a { color: var(--accent); text-decoration: none; font-size: 0.8rem; }
+
+        /* Mode toggle pill */
+        .mode-pill {
+            display: inline-flex; align-items: center; gap: 0.5rem;
+            padding: 0.3rem 0.9rem; border-radius: 9999px; cursor: pointer;
+            font-size: 0.75rem; font-weight: 700; border: none; transition: all 0.2s;
+        }
+        .mode-pill.paper { background: #1d4ed8; color: white; }
+        .mode-pill.real { background: #dc2626; color: white; animation: pulse-red 2s infinite; }
+        @keyframes pulse-red { 0%,100%{box-shadow:0 0 0 0 #dc262640} 50%{box-shadow:0 0 0 6px #dc262600} }
+
+        /* Status bar */
+        .status-bar { background: var(--card); padding: 0.6rem 1.5rem; display: flex; gap: 2rem; align-items: center; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
         .status-item { display: flex; flex-direction: column; align-items: center; }
-        .status-label { color: var(--muted); font-size: 0.75rem; }
-        .status-value { font-weight: 600; font-size: 1rem; }
-        .status-value.green { color: var(--green); }
-        .status-value.red { color: var(--red); }
-        .status-value.yellow { color: var(--yellow); }
-        .grid { display: grid; grid-template-columns: 1fr 300px; gap: 1rem; padding: 1rem 2rem; }
-        .card { background: var(--card); border-radius: 0.5rem; padding: 1rem; border: 1px solid #334155; }
-        .card h2 { font-size: 1rem; margin-bottom: 0.75rem; color: var(--muted); }
-        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-        th, td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #334155; }
-        th { color: var(--muted); font-weight: 500; }
-        .btn { padding: 0.5rem 1rem; border: none; border-radius: 0.375rem; cursor: pointer; font-size: 0.85rem; font-weight: 500; }
+        .status-label { color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .status-value { font-weight: 600; font-size: 0.95rem; }
+        .green { color: var(--green); }
+        .red { color: var(--red); }
+        .yellow { color: var(--yellow); }
+
+        /* Controls */
+        .controls { padding: 0.75rem 1.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; background: var(--bg); border-bottom: 1px solid var(--border); }
+        .btn { padding: 0.4rem 0.9rem; border: none; border-radius: 0.375rem; cursor: pointer; font-size: 0.82rem; font-weight: 500; transition: opacity 0.15s; }
+        .btn:hover { opacity: 0.85; }
         .btn-primary { background: var(--accent); color: white; }
         .btn-danger { background: var(--red); color: white; }
-        .btn-success { background: var(--green); color: white; }
+        .btn-success { background: var(--green); color: #0f172a; }
         .btn-warning { background: var(--yellow); color: #1e293b; }
-        .controls { display: flex; gap: 0.5rem; padding: 1rem 2rem; }
-        .log-panel { max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; }
-        .log-entry { padding: 0.25rem 0; border-bottom: 1px solid #1e293b; }
-        .log-entry.critical { color: var(--red); }
-        .log-entry.important { color: var(--yellow); }
-        .log-entry.info { color: var(--text); }
-        .heat-map { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
-        .heat-cell { padding: 0.75rem; border-radius: 0.375rem; text-align: center; font-size: 0.8rem; }
-        .nav-links { display: flex; gap: 1rem; }
-        .nav-links a { color: var(--accent); text-decoration: none; font-size: 0.875rem; }
-        .pnl-positive { color: var(--green); }
-        .pnl-negative { color: var(--red); }
-        #login-form { max-width: 400px; margin: 4rem auto; }
-        #login-form input { width: 100%; padding: 0.5rem; margin: 0.5rem 0; background: var(--bg); border: 1px solid #334155; color: var(--text); border-radius: 0.375rem; }
+        .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+
+        /* Quick balance editor */
+        .balance-edit { display: flex; align-items: center; gap: 0.4rem; margin-left: auto; }
+        .balance-edit label { font-size: 0.78rem; color: var(--muted); }
+        .balance-edit input { width: 100px; padding: 0.35rem 0.5rem; background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 0.3rem; font-size: 0.82rem; }
+
+        /* Main grid */
+        .grid { display: grid; grid-template-columns: 1fr 300px; gap: 1rem; padding: 1rem 1.5rem; }
+        .card { background: var(--card); border-radius: 0.5rem; padding: 1rem; border: 1px solid var(--border); margin-bottom: 1rem; }
+        .card:last-child { margin-bottom: 0; }
+        .card h2 { font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem; }
+
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+        th, td { padding: 0.45rem 0.5rem; text-align: left; border-bottom: 1px solid var(--border); }
+        th { color: var(--muted); font-weight: 500; font-size: 0.75rem; text-transform: uppercase; }
+        tr:last-child td { border-bottom: none; }
+
+        /* Metrics */
+        .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+        .metric-item { background: var(--bg); border-radius: 0.375rem; padding: 0.5rem 0.75rem; }
+        .metric-label { font-size: 0.7rem; color: var(--muted); }
+        .metric-value { font-size: 1rem; font-weight: 700; }
+
+        /* Quick settings */
+        .quick-settings { font-size: 0.82rem; }
+        .qs-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.6rem; }
+        .qs-row label { color: var(--muted); font-size: 0.75rem; }
+        .qs-row input[type="range"] { width: 100px; accent-color: var(--accent); }
+        .qs-row input[type="number"] { width: 90px; padding: 0.25rem 0.4rem; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 0.25rem; font-size: 0.8rem; }
+        .qs-val { min-width: 40px; text-align: right; font-weight: 600; font-size: 0.8rem; }
+
+        /* Activity log */
+        .log-panel { max-height: 280px; overflow-y: auto; font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 0.75rem; }
+        .log-entry { padding: 0.2rem 0.3rem; border-bottom: 1px solid #1e293b; display: flex; gap: 0.5rem; }
+        .log-time { color: var(--muted); flex-shrink: 0; }
+        .log-level { flex-shrink: 0; width: 50px; }
+        .log-msg { word-break: break-all; }
+        .log-entry.ERROR .log-level { color: var(--red); }
+        .log-entry.WARNING .log-level { color: var(--yellow); }
+        .log-entry.INFO .log-level { color: var(--accent); }
+        .log-entry.CRITICAL .log-level { color: #f97316; }
+
+        /* Category heat map */
+        .heat-map { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+        .heat-cell { padding: 0.6rem; border-radius: 0.375rem; text-align: center; font-size: 0.78rem; }
+        .heat-name { color: var(--muted); font-size: 0.7rem; }
+        .heat-val { font-weight: 700; }
+
+        /* Login */
+        #login-wrap { display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        #login-card { background: var(--card); border-radius: 0.75rem; padding: 2rem; width: 340px; border: 1px solid var(--border); }
+        #login-card h2 { margin-bottom: 1rem; font-size: 1.2rem; }
+        #login-card input { width: 100%; padding: 0.55rem 0.75rem; margin-bottom: 0.75rem; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 0.375rem; font-size: 0.9rem; }
+        #login-card input:focus { outline: none; border-color: var(--accent); }
+
+        /* Toast */
+        .toast-wrap { position: fixed; bottom: 1.5rem; right: 1.5rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 1000; }
+        .toast { background: var(--card2); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.6rem 1rem; font-size: 0.82rem; min-width: 220px; animation: slide-in 0.3s ease; }
+        .toast.success { border-left: 3px solid var(--green); }
+        .toast.error { border-left: 3px solid var(--red); }
+        .toast.info { border-left: 3px solid var(--accent); }
+        @keyframes slide-in { from { transform: translateX(100px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+        .pnl-pos { color: var(--green); }
+        .pnl-neg { color: var(--red); }
+        .empty-row td { text-align: center; color: var(--muted); padding: 1.5rem; }
     </style>
 </head>
 <body x-data="dashboard()" x-init="init()">
+
     <!-- Login -->
-    <div x-show="!token" id="login-form" class="card">
-        <h2>Login</h2>
-        <input type="text" x-model="username" placeholder="Username">
-        <input type="password" x-model="password" placeholder="Password" @keyup.enter="login()">
-        <button class="btn btn-primary" @click="login()" style="width:100%;margin-top:0.5rem">Login</button>
-        <p x-show="loginError" style="color:var(--red);margin-top:0.5rem;font-size:0.85rem" x-text="loginError"></p>
+    <div x-show="!token" id="login-wrap">
+        <div id="login-card">
+            <h2>🤖 Polymarket Bot</h2>
+            <input type="text" x-model="username" placeholder="Username" @keyup.enter="login()">
+            <input type="password" x-model="password" placeholder="Password" @keyup.enter="login()">
+            <button class="btn btn-primary" @click="login()" style="width:100%">Sign In</button>
+            <p x-show="loginError" style="color:var(--red);margin-top:0.5rem;font-size:0.82rem" x-text="loginError"></p>
+        </div>
     </div>
 
     <!-- Dashboard -->
     <div x-show="token" x-cloak>
+
+        <!-- Header -->
         <div class="header">
-            <h1>Polymarket Trading Bot</h1>
+            <h1>Polymarket Bot</h1>
             <div class="nav-links">
                 <a href="/calibration">Calibration</a>
-                <a href="/onboarding">Setup</a>
-                <a href="/api/docs" target="_blank">API Docs</a>
+                <a href="/onboarding">⚙ Setup</a>
+                <a href="/api/docs" target="_blank">API</a>
                 <a href="#" @click.prevent="logout()">Logout</a>
             </div>
         </div>
 
-        <!-- Top Status Bar -->
-        <div class="header" style="border-top:none">
-            <div class="status-bar">
-                <div class="status-item">
-                    <span class="status-label">Status</span>
-                    <span class="status-value" :class="status.status === 'running' ? 'green' : 'red'" x-text="status.status || 'N/A'"></span>
-                </div>
-                <div class="status-item">
-                    <span class="status-label">Mode</span>
-                    <span class="status-value" x-text="status.mode || 'N/A'"></span>
-                </div>
-                <div class="status-item">
-                    <span class="status-label">Balance</span>
-                    <span class="status-value" x-text="'$' + (status.balance != null ? status.balance.toFixed(2) : '0.00')"></span>
-                </div>
-                <div class="status-item">
-                    <span class="status-label">PnL Today</span>
-                    <span class="status-value" :class="metrics.daily_pnl >= 0 ? 'green' : 'red'" x-text="'$' + (metrics.daily_pnl || 0).toFixed(2)"></span>
-                </div>
-                <div class="status-item">
-                    <span class="status-label">Regime</span>
-                    <span class="status-value" x-text="status.regime || 'ranging'"></span>
-                </div>
-                <div class="status-item">
-                    <span class="status-label">Signals Today</span>
-                    <span class="status-value" x-text="calibration.signals_detected || 0"></span>
-                </div>
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <div class="status-item">
+                <span class="status-label">Status</span>
+                <span class="status-value" :class="status.status === 'running' ? 'green' : 'red'" x-text="status.status || 'N/A'"></span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Mode</span>
+                <button
+                    class="mode-pill"
+                    :class="(status.mode || 'paper') === 'paper' ? 'paper' : 'real'"
+                    @click="confirmToggleMode()"
+                    x-text="(status.mode || 'paper').toUpperCase()"
+                    title="Click to toggle paper/real mode">
+                </button>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Balance</span>
+                <span class="status-value" x-text="'$' + (status.balance != null ? status.balance.toFixed(2) : '0.00')"></span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">PnL Today</span>
+                <span class="status-value" :class="metrics.daily_pnl >= 0 ? 'green' : 'red'" x-text="'$' + (metrics.daily_pnl || 0).toFixed(2)"></span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Regime</span>
+                <span class="status-value" x-text="status.regime || 'ranging'"></span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Signals Today</span>
+                <span class="status-value yellow" x-text="calibration.signals_detected || 0"></span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Executed</span>
+                <span class="status-value green" x-text="calibration.executed || 0"></span>
             </div>
         </div>
 
         <!-- Controls -->
         <div class="controls">
-            <button class="btn btn-success" @click="startBot()">Start</button>
-            <button class="btn btn-danger" @click="stopBot()">Stop</button>
+            <button class="btn btn-success" @click="startBot()">▶ Start</button>
+            <button class="btn btn-danger" @click="stopBot()">■ Stop</button>
             <button class="btn btn-warning" @click="window.location='/calibration'">Calibrate</button>
-            <button class="btn btn-primary" @click="refreshAll()">Refresh</button>
-            <button class="btn btn-primary" @click="exportTrades()">Export CSV</button>
+            <button class="btn btn-ghost" @click="refreshAll()">↻ Refresh</button>
+            <button class="btn btn-ghost" @click="exportTrades()">↓ Export CSV</button>
+
+            <!-- Quick balance change (only in paper mode) -->
+            <div class="balance-edit" x-show="(status.mode || 'paper') === 'paper'">
+                <label>Paper Balance $</label>
+                <input type="number" x-model.number="quickBalance" :placeholder="status.balance || 10000" min="100" step="100">
+                <button class="btn btn-primary" @click="saveBalance()" style="padding:0.35rem 0.7rem;font-size:0.78rem">Set</button>
+            </div>
         </div>
 
         <!-- Main Grid -->
         <div class="grid">
+
+            <!-- Left Column -->
             <div>
-                <!-- Positions -->
-                <div class="card" style="margin-bottom:1rem">
-                    <h2>Active Positions</h2>
+                <!-- Active Positions -->
+                <div class="card">
+                    <h2>Active Positions (<span x-text="positions.length"></span>)</h2>
                     <table>
                         <thead>
                             <tr><th>Market</th><th>Dir</th><th>Entry</th><th>Current</th><th>Size</th><th>Trail</th><th>Strategy</th><th></th></tr>
@@ -121,17 +216,17 @@
                         <tbody>
                             <template x-for="pos in positions" :key="pos.id">
                                 <tr>
-                                    <td x-text="pos.market_id?.substring(0,20) + '...'"></td>
-                                    <td x-text="pos.direction"></td>
+                                    <td x-text="(pos.market_id || '').substring(0,22) + '...'"></td>
+                                    <td :class="pos.direction === 'BUY' ? 'green' : 'red'" x-text="pos.direction"></td>
                                     <td x-text="pos.entry_price?.toFixed(4)"></td>
                                     <td x-text="pos.current_price?.toFixed(4)"></td>
-                                    <td x-text="'$' + pos.size_usd?.toFixed(0)"></td>
+                                    <td x-text="'$' + (pos.size_usd || 0).toFixed(0)"></td>
                                     <td x-text="pos.trailing_state"></td>
                                     <td x-text="pos.strategy"></td>
-                                    <td><button class="btn btn-danger" style="padding:0.25rem 0.5rem;font-size:0.75rem" @click="closePosition(pos.id)">Close</button></td>
+                                    <td><button class="btn btn-danger" style="padding:0.2rem 0.5rem;font-size:0.72rem" @click="closePosition(pos.id)">Close</button></td>
                                 </tr>
                             </template>
-                            <tr x-show="positions.length === 0"><td colspan="8" style="text-align:center;color:var(--muted)">No active positions</td></tr>
+                            <tr x-show="positions.length === 0" class="empty-row"><td colspan="8">No active positions</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -141,61 +236,121 @@
                     <h2>Recent Trades</h2>
                     <table>
                         <thead>
-                            <tr><th>Market</th><th>Dir</th><th>PnL</th><th>Strategy</th><th>Exit</th><th>Time</th></tr>
+                            <tr><th>Market</th><th>Dir</th><th>PnL $</th><th>PnL %</th><th>Strategy</th><th>Exit</th><th>Time</th></tr>
                         </thead>
                         <tbody>
                             <template x-for="trade in trades" :key="trade.id">
                                 <tr>
-                                    <td x-text="trade.market_id?.substring(0,20)"></td>
-                                    <td x-text="trade.direction"></td>
-                                    <td :class="trade.pnl_usd >= 0 ? 'pnl-positive' : 'pnl-negative'" x-text="'$' + trade.pnl_usd?.toFixed(2)"></td>
+                                    <td x-text="(trade.market_id || '').substring(0,20)"></td>
+                                    <td :class="trade.direction === 'BUY' ? 'green' : 'red'" x-text="trade.direction"></td>
+                                    <td :class="trade.pnl_usd >= 0 ? 'pnl-pos' : 'pnl-neg'" x-text="'$' + (trade.pnl_usd || 0).toFixed(2)"></td>
+                                    <td :class="trade.pnl_pct >= 0 ? 'pnl-pos' : 'pnl-neg'" x-text="(trade.pnl_pct || 0).toFixed(1) + '%'"></td>
                                     <td x-text="trade.strategy"></td>
                                     <td x-text="trade.exit_reason"></td>
-                                    <td x-text="trade.timestamp?.substring(11,19)"></td>
+                                    <td x-text="(trade.timestamp || '').substring(11,19)"></td>
                                 </tr>
                             </template>
+                            <tr x-show="trades.length === 0" class="empty-row"><td colspan="7">No trades yet — bot running in paper mode will simulate trades</td></tr>
                         </tbody>
                     </table>
                 </div>
             </div>
 
-            <!-- Right Panel -->
+            <!-- Right Column -->
             <div>
+
                 <!-- Metrics -->
-                <div class="card" style="margin-bottom:1rem">
-                    <h2>Metrics</h2>
-                    <div style="font-size:0.85rem">
-                        <p>Win Rate: <strong x-text="(metrics.win_rate * 100).toFixed(1) + '%'"></strong></p>
-                        <p>Sharpe: <strong x-text="metrics.sharpe_ratio?.toFixed(3)"></strong></p>
-                        <p>Max DD: <strong x-text="'$' + metrics.max_drawdown?.toFixed(2)"></strong></p>
-                        <p>Total Trades: <strong x-text="metrics.total_trades"></strong></p>
+                <div class="card">
+                    <h2>Performance</h2>
+                    <div class="metric-grid">
+                        <div class="metric-item">
+                            <div class="metric-label">Win Rate</div>
+                            <div class="metric-value" :class="(metrics.win_rate||0) >= 0.5 ? 'green' : 'red'" x-text="((metrics.win_rate||0)*100).toFixed(1) + '%'"></div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Sharpe</div>
+                            <div class="metric-value" x-text="(metrics.sharpe_ratio||0).toFixed(2)"></div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Max DD</div>
+                            <div class="metric-value red" x-text="'$' + (metrics.max_drawdown||0).toFixed(0)"></div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Trades</div>
+                            <div class="metric-value" x-text="metrics.total_trades || 0"></div>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Exposure Heat Map -->
-                <div class="card" style="margin-bottom:1rem">
-                    <h2>Category Exposure</h2>
+                <!-- Quick Settings -->
+                <div class="card">
+                    <h2 style="cursor:pointer;user-select:none" @click="showQuickSettings = !showQuickSettings">
+                        Quick Settings <span x-text="showQuickSettings ? '▲' : '▼'" style="float:right"></span>
+                    </h2>
+                    <div x-show="showQuickSettings" class="quick-settings">
+                        <div class="qs-row">
+                            <label>Position Size</label>
+                            <input type="range" min="1" max="10" step="0.5" x-model.number="qs.position_pct">
+                            <span class="qs-val" x-text="qs.position_pct + '%'"></span>
+                        </div>
+                        <div class="qs-row">
+                            <label>Max Daily Loss</label>
+                            <input type="range" min="3" max="15" step="1" x-model.number="qs.max_daily_loss">
+                            <span class="qs-val" x-text="qs.max_daily_loss + '%'"></span>
+                        </div>
+                        <div class="qs-row">
+                            <label>Trailing Stop</label>
+                            <input type="range" min="2" max="10" step="0.5" x-model.number="qs.trailing_pct">
+                            <span class="qs-val" x-text="qs.trailing_pct + '%'"></span>
+                        </div>
+                        <div class="qs-row">
+                            <label>Z-Score Threshold</label>
+                            <input type="range" min="1" max="3" step="0.1" x-model.number="qs.zscore">
+                            <span class="qs-val" x-text="qs.zscore"></span>
+                        </div>
+                        <button class="btn btn-primary" style="width:100%;margin-top:0.5rem" @click="applyQuickSettings()">Apply Settings</button>
+                    </div>
+                </div>
+
+                <!-- Category Exposure -->
+                <div class="card">
+                    <h2>Exposure by Category</h2>
                     <div class="heat-map">
                         <template x-for="cat in categories" :key="cat.name">
                             <div class="heat-cell" :style="'background:' + cat.color">
-                                <div x-text="cat.name"></div>
-                                <div x-text="'$' + cat.exposure.toFixed(0)"></div>
+                                <div class="heat-name" x-text="cat.name"></div>
+                                <div class="heat-val" x-text="'$' + cat.exposure.toFixed(0)"></div>
                             </div>
                         </template>
                     </div>
                 </div>
 
-                <!-- Log -->
+                <!-- Activity Log -->
                 <div class="card">
-                    <h2>Live Log</h2>
+                    <h2>Activity Log</h2>
                     <div class="log-panel">
                         <template x-for="(log, i) in logs" :key="i">
-                            <div class="log-entry" :class="log.level" x-text="log.time + ' ' + log.msg"></div>
+                            <div class="log-entry" :class="log.level">
+                                <span class="log-time" x-text="log.time?.substring(11)"></span>
+                                <span class="log-level" x-text="log.level"></span>
+                                <span class="log-msg" x-text="log.msg"></span>
+                            </div>
                         </template>
+                        <div x-show="logs.length === 0" style="color:var(--muted);padding:1rem;text-align:center;font-size:0.8rem">
+                            Waiting for bot activity...
+                        </div>
                     </div>
                 </div>
+
             </div>
         </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div class="toast-wrap">
+        <template x-for="(t, i) in toasts" :key="i">
+            <div class="toast" :class="t.type" x-text="t.msg"></div>
+        </template>
     </div>
 
     <script>
@@ -203,14 +358,19 @@
         return {
             token: localStorage.getItem('jwt_token') || '',
             username: '', password: '', loginError: '',
-            status: {}, metrics: {}, positions: [], trades: [], calibration: {},
-            categories: [], logs: [],
-            refreshInterval: null,
+            status: {}, metrics: {}, positions: [], trades: [],
+            calibration: {}, categories: [], logs: [],
+            toasts: [], refreshInterval: null,
+            showQuickSettings: false,
+            quickBalance: null,
+            qs: { position_pct: 5, max_daily_loss: 8, trailing_pct: 5, zscore: 1.8 },
 
             async init() {
                 if (this.token) {
                     await this.refreshAll();
+                    await this.loadSettings();
                     this.refreshInterval = setInterval(() => this.refreshAll(), 5000);
+                    setInterval(() => this.refreshLogs(), 3000);
                 }
             },
 
@@ -227,7 +387,9 @@
                     localStorage.setItem('jwt_token', this.token);
                     this.loginError = '';
                     await this.refreshAll();
+                    await this.loadSettings();
                     this.refreshInterval = setInterval(() => this.refreshAll(), 5000);
+                    setInterval(() => this.refreshLogs(), 3000);
                 } catch(e) { this.loginError = 'Connection error'; }
             },
 
@@ -237,21 +399,25 @@
                 if (this.refreshInterval) clearInterval(this.refreshInterval);
             },
 
-            headers() { return { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' }; },
+            headers() {
+                return { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' };
+            },
 
             async apiFetch(url) {
-                const res = await fetch(url, { headers: this.headers() });
-                if (res.status === 401) { this.logout(); return null; }
-                return res.ok ? await res.json() : null;
+                try {
+                    const res = await fetch(url, { headers: this.headers() });
+                    if (res.status === 401) { this.logout(); return null; }
+                    return res.ok ? await res.json() : null;
+                } catch(e) { return null; }
             },
 
             async refreshAll() {
                 const [s, m, p, t, c] = await Promise.all([
-                    this.apiFetch('/api/status').catch(() => null),
-                    this.apiFetch('/api/metrics').catch(() => null),
-                    this.apiFetch('/api/positions').catch(() => null),
-                    this.apiFetch('/api/trades?limit=20').catch(() => null),
-                    this.apiFetch('/api/metrics/calibration').catch(() => null),
+                    this.apiFetch('/api/status'),
+                    this.apiFetch('/api/metrics'),
+                    this.apiFetch('/api/positions'),
+                    this.apiFetch('/api/trades?limit=25'),
+                    this.apiFetch('/api/metrics/calibration'),
                 ]);
                 if (s) this.status = s;
                 if (m) this.metrics = m;
@@ -261,40 +427,110 @@
                 this.updateCategories();
             },
 
-            updateCategories() {
-                const cats = {};
-                for (const p of this.positions) {
-                    cats[p.category] = (cats[p.category] || 0) + p.size_usd;
-                }
-                const colors = { politics: '#3b82f6aa', crypto: '#8b5cf6aa', sports: '#22c55eaa', other: '#6b7280aa' };
-                this.categories = Object.entries(cats).map(([name, exposure]) => ({
-                    name, exposure, color: colors[name] || colors.other
-                }));
-                if (this.categories.length === 0) {
-                    this.categories = [
-                        { name: 'politics', exposure: 0, color: colors.politics },
-                        { name: 'crypto', exposure: 0, color: colors.crypto },
-                        { name: 'sports', exposure: 0, color: colors.sports },
-                        { name: 'other', exposure: 0, color: colors.other },
-                    ];
+            async refreshLogs() {
+                const data = await this.apiFetch('/api/logs?limit=80');
+                if (data) this.logs = data;
+            },
+
+            async loadSettings() {
+                const s = await this.apiFetch('/api/settings');
+                if (s) {
+                    this.qs.position_pct = s.default_position_pct || 5;
+                    this.qs.max_daily_loss = s.max_daily_loss_pct || 8;
+                    this.qs.trailing_pct = s.trailing_pct || 5;
+                    this.qs.zscore = s.zscore_threshold || 1.8;
+                    this.quickBalance = s.paper_initial_balance || 10000;
                 }
             },
 
-            async startBot() { await fetch('/api/start', { method: 'POST', headers: this.headers() }); await this.refreshAll(); },
-            async stopBot() { await fetch('/api/stop', { method: 'POST', headers: this.headers() }); await this.refreshAll(); },
-            async closePosition(id) {
-                await fetch('/api/positions/' + id + '/close', { method: 'POST', headers: this.headers() });
+            updateCategories() {
+                const cats = {};
+                for (const p of this.positions) {
+                    cats[p.category] = (cats[p.category] || 0) + (p.size_usd || 0);
+                }
+                const colors = { politics:'#1d4ed880', crypto:'#7c3aed80', sports:'#15803d80', other:'#47556980' };
+                this.categories = Object.entries(cats).map(([name, exposure]) => ({name, exposure, color: colors[name] || colors.other}));
+                if (this.categories.length === 0) {
+                    this.categories = ['politics','crypto','sports','other'].map(name => ({name, exposure: 0, color: colors[name]}));
+                }
+            },
+
+            async confirmToggleMode() {
+                const current = (this.status.mode || 'paper');
+                if (current === 'paper') {
+                    const ok = confirm('⚠️ Switch to REAL trading mode?\n\nThis will use real funds. Make sure your API keys are configured in Setup.');
+                    if (!ok) return;
+                }
+                const res = await fetch('/api/mode/toggle', { method: 'POST', headers: this.headers() });
+                if (res.ok) {
+                    const data = await res.json();
+                    this.status.mode = data.mode;
+                    this.toast(data.mode === 'real' ? '🔴 REAL mode active — real funds at risk' : '✅ Switched to paper mode', data.mode === 'real' ? 'error' : 'success');
+                    await this.refreshAll();
+                }
+            },
+
+            async saveBalance() {
+                if (!this.quickBalance || this.quickBalance < 100) { this.toast('Enter a valid balance (min $100)', 'error'); return; }
+                const res = await fetch('/api/config', {
+                    method: 'POST', headers: this.headers(),
+                    body: JSON.stringify({key: 'paper_initial_balance', value: this.quickBalance})
+                });
+                if (res.ok) { this.toast(`Paper balance set to $${this.quickBalance}`, 'success'); await this.refreshAll(); }
+            },
+
+            async applyQuickSettings() {
+                const updates = [
+                    {key: 'default_position_pct', value: this.qs.position_pct},
+                    {key: 'max_daily_loss_pct', value: this.qs.max_daily_loss},
+                    {key: 'trailing_pct', value: this.qs.trailing_pct},
+                    {key: 'zscore_threshold', value: this.qs.zscore},
+                ];
+                let ok = true;
+                for (const u of updates) {
+                    const res = await fetch('/api/config', {method:'POST', headers:this.headers(), body:JSON.stringify(u)});
+                    if (!res.ok) ok = false;
+                }
+                this.toast(ok ? '✅ Settings applied' : '⚠️ Some settings failed', ok ? 'success' : 'error');
+            },
+
+            async startBot() {
+                await fetch('/api/start', {method:'POST', headers:this.headers()});
+                this.toast('Start requested', 'info');
                 await this.refreshAll();
             },
+
+            async stopBot() {
+                await fetch('/api/stop', {method:'POST', headers:this.headers()});
+                this.toast('Bot stopped', 'info');
+                await this.refreshAll();
+            },
+
+            async closePosition(id) {
+                if (!confirm('Close this position?')) return;
+                const res = await fetch('/api/positions/' + id + '/close', {method:'POST', headers:this.headers()});
+                if (res.ok) {
+                    const d = await res.json();
+                    this.toast(`Position closed — PnL: $${d.pnl_usd}`, d.pnl_usd >= 0 ? 'success' : 'error');
+                }
+                await this.refreshAll();
+            },
+
             async exportTrades() {
-                const res = await fetch('/api/export/trades?format=csv', { headers: this.headers() });
+                const res = await fetch('/api/export/trades?format=csv', {headers: this.headers()});
                 if (res.ok) {
                     const blob = await res.blob();
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url; a.download = 'trades.csv'; a.click();
+                    this.toast('CSV downloaded', 'success');
                 }
-            }
+            },
+
+            toast(msg, type = 'info') {
+                this.toasts.push({msg, type});
+                setTimeout(() => this.toasts.shift(), 4000);
+            },
         };
     }
     </script>
