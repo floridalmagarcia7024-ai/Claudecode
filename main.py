@@ -356,6 +356,8 @@ async def lifespan(app: FastAPI):
             await engine_task
         except asyncio.CancelledError:
             pass
+    if telegram_task:
+        telegram_task.cancel()
     await journal.close()
     await collector.close()
     await state.close()
