@@ -171,11 +171,10 @@ class PolymarketClient:
             markets: list[MarketData] = []
             data = raw if isinstance(raw, list) else raw.get("data", [])
             
-            # ---> INICIO DEL FILTRO DE VOLUMEN <---
-            # 1. Solo nos quedamos con mercados que hayan movido más de $5,000 USD hoy
-            data = [m for m in data if float(m.get("volume_num_24hr", 0.0)) > 5000.0]
-            # 2. Los ordenamos para escanear primero los más calientes (mayor volumen)
-            data.sort(key=lambda x: float(x.get("volume_num_24hr", 0.0)), reverse=True)
+            # ---> INICIO DEL FILTRO DE VOLUMEN (CORREGIDO) <---
+            # Simplemente ordenamos de mayor a menor para que el bot tome el Top 100
+            # Si "volume_num_24hr" no existe, usamos "volume" o 0.0 para que no falle
+            data.sort(key=lambda x: float(x.get("volume_num_24hr", x.get("volume", 0.0))), reverse=True)
             # ---> FIN DEL FILTRO <---
 
             for item in data[:limit]:
