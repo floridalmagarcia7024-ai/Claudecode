@@ -82,12 +82,13 @@ logger = structlog.get_logger(__name__)
 
 engine: TradingEngine | None = None
 engine_task: asyncio.Task | None = None  # type: ignore[type-arg]
+telegram_task: asyncio.Task | None = None  # <-- AGREGA ESTA LÍNEA
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize all components on startup, clean up on shutdown."""
-    global engine, engine_task
+    global engine, engine_task, telegram_task
 
     logger.info(
         "bot_starting",
@@ -304,6 +305,35 @@ async def lifespan(app: FastAPI):
             stress_cb=_get_stress_report,
             divergences_cb=_get_divergences,
         )
+
+        # ---> INICIO DEL CÓDIGO NUEVO PARA ESCUCHAR TELEGRAM <---
+        async def telegram_listener():
+            if not telegram_bot._enabled or not telegram_bot._bot:
+                return
+            update_offset = None
+            while True:
+                try:
+                    # Consultamos a Telegram si hay mensajes nuevos cada pocos segundos
+                    updates = await telegram_bot._bot.get_updates(offset=update_offset, timeout=10)
+                    for update in updates:
+                        update_offset = update.update_id + 1
+                        msg = update.message
+                        if msg and msg.text and msg.text.startswith('/'):
+                            # Si detecta un comando, lo procesa y responde
+                            respuesta = await telegram_bot.handle_command(msg.text)
+                            await telegram_bot._bot.send_message(
+                                chat_id=msg.chat_id, 
+                                text=respuesta
+                            )
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    await asyncio.sleep(5)  # Pausa de seguridad si falla la red
+                await asyncio.sleep(0.5)
+
+        telegram_task = asyncio.create_task(telegram_listener())
+        # ---> FIN DEL CÓDIGO NUEVO <---
+
 
         if health_monitor and not settings.paper_mode:
             alerts = await health_monitor.reconcile_on_restart()
