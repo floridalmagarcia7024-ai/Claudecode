@@ -165,19 +165,34 @@ class PolymarketClient:
     # ── Public Methods ────────────────────────────────────────
 
     async def get_active_markets(self, limit: int = 100) -> list[MarketData]:
-        """Fetch active markets from Polymarket."""
+        """Fetch active markets from Polymarket using Gamma API."""
         try:
-            raw = await self._call_with_retry(self._client.get_markets, next_cursor="")
+            import aiohttp
+            
+            # Hacemos una llamada directa a la API pidiendo 500 mercados vivos
+            url = "https://gamma-api.polymarket.com/markets"
+            params = {
+                "active": "true",
+                "closed": "false",
+                "limit": "500"  
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as resp:
+                    if resp.status == 200:
+                        raw = await resp.json()
+                    else:
+                        # Fallback a la librería si la API directa falla
+                        raw = await self._call_with_retry(self._client.get_markets, next_cursor="")
+
             markets: list[MarketData] = []
             data = raw if isinstance(raw, list) else raw.get("data", [])
 
-            # ---> INICIO DEL FILTRO DE VOLUMEN Y MERCADOS CERRADOS <---
-            # 1. Descartamos instantáneamente los mercados que ya están cerrados o inactivos
+            # 1. Filtro extra por seguridad para eliminar cualquier rezagado
             data = [m for m in data if m.get("active", True) and not m.get("closed", False)]
             
-            # 2. Ordenamos de mayor a menor volumen para tomar el Top 100
+            # 2. Ordenamos por volumen real para quedarnos con el verdadero Top 100
             data.sort(key=lambda x: float(x.get("volume_num_24hr", x.get("volume", 0.0))), reverse=True)
-            # ---> FIN DEL FILTRO <---
 
             for item in data[:limit]:
                 tokens = item.get("tokens", [])
