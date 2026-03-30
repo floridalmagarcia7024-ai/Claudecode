@@ -3,46 +3,62 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Setup Wizard - Polymarket Bot</title>
+    <title>Setup — Polymarket Bot</title>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
     <style>
-        :root { --bg: #0f172a; --card: #1e293b; --accent: #3b82f6; --green: #22c55e; --red: #ef4444; --yellow: #eab308; --text: #e2e8f0; --muted: #94a3b8; }
+        [x-cloak] { display: none !important; }
+        :root { --bg: #0f172a; --card: #1e293b; --accent: #3b82f6; --green: #22c55e; --red: #ef4444; --yellow: #eab308; --text: #e2e8f0; --muted: #94a3b8; --border: #334155; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; justify-content: center; align-items: flex-start; padding: 2rem; }
+        body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; justify-content: center; padding: 2rem 1rem; }
         .wizard { max-width: 640px; width: 100%; }
-        .card { background: var(--card); border-radius: 0.5rem; padding: 2rem; border: 1px solid #334155; }
-        h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
-        h2 { font-size: 1.1rem; margin-bottom: 1rem; }
-        .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 2rem; }
-        .steps { display: flex; gap: 0.5rem; margin-bottom: 2rem; }
-        .step { flex: 1; height: 4px; border-radius: 2px; background: #334155; }
+        .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+        .top-bar h1 { font-size: 1.4rem; }
+        .top-bar a { color: var(--accent); text-decoration: none; font-size: 0.85rem; }
+        .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.5rem; }
+        .steps { display: flex; gap: 0.4rem; margin-bottom: 1.5rem; }
+        .step { flex: 1; height: 4px; border-radius: 2px; background: var(--border); transition: background 0.3s; }
         .step.active { background: var(--accent); }
         .step.done { background: var(--green); }
-        .form-group { margin-bottom: 1.25rem; }
-        .form-group label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.375rem; }
-        .form-group input, .form-group select { width: 100%; padding: 0.625rem; background: var(--bg); border: 1px solid #334155; color: var(--text); border-radius: 0.375rem; font-size: 0.9rem; }
+        .card { background: var(--card); border-radius: 0.6rem; padding: 1.75rem; border: 1px solid var(--border); }
+        h2 { font-size: 1.05rem; margin-bottom: 1.25rem; }
+        .form-group { margin-bottom: 1.1rem; }
+        .form-group label { display: flex; align-items: center; gap: 0.4rem; font-size: 0.82rem; color: var(--muted); margin-bottom: 0.35rem; }
+        .configured-badge { background: #166534; color: #4ade80; font-size: 0.7rem; padding: 0.1rem 0.5rem; border-radius: 9999px; }
+        .form-group input, .form-group select { width: 100%; padding: 0.55rem 0.75rem; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 0.375rem; font-size: 0.88rem; transition: border-color 0.15s; }
         .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--accent); }
-        .form-group input[type="range"] { accent-color: var(--accent); }
-        .form-group .help { font-size: 0.75rem; color: var(--muted); margin-top: 0.25rem; }
-        .form-group .range-label { display: flex; justify-content: space-between; font-size: 0.8rem; }
-        .btns { display: flex; justify-content: space-between; margin-top: 2rem; }
-        .btn { padding: 0.625rem 1.5rem; border: none; border-radius: 0.375rem; cursor: pointer; font-weight: 500; font-size: 0.9rem; }
+        .form-group input[type="range"] { accent-color: var(--accent); padding: 0; border: none; background: none; }
+        .help { font-size: 0.73rem; color: var(--muted); margin-top: 0.3rem; }
+        .range-row { display: flex; align-items: center; gap: 0.75rem; }
+        .range-row input { flex: 1; }
+        .range-val { min-width: 55px; text-align: right; font-weight: 600; font-size: 0.88rem; }
+        .range-labels { display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--muted); margin-top: 0.2rem; }
+        .btns { display: flex; justify-content: space-between; margin-top: 1.75rem; gap: 0.5rem; }
+        .btn { padding: 0.6rem 1.4rem; border: none; border-radius: 0.375rem; cursor: pointer; font-weight: 600; font-size: 0.88rem; transition: opacity 0.15s; }
+        .btn:hover { opacity: 0.85; }
         .btn-primary { background: var(--accent); color: white; }
-        .btn-secondary { background: transparent; border: 1px solid #334155; color: var(--text); }
-        .btn-success { background: var(--green); color: white; }
+        .btn-secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+        .btn-success { background: var(--green); color: #0f172a; }
         .checkbox-group { display: flex; flex-wrap: wrap; gap: 0.75rem; }
-        .checkbox-item { display: flex; align-items: center; gap: 0.375rem; font-size: 0.85rem; }
-        .checkbox-item input { accent-color: var(--accent); }
-        .semaphore { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 0.375rem; }
-        .semaphore.green { background: var(--green); }
-        .semaphore.yellow { background: var(--yellow); }
-        .semaphore.red { background: var(--red); }
+        .checkbox-item { display: flex; align-items: center; gap: 0.375rem; font-size: 0.85rem; cursor: pointer; }
+        .checkbox-item input { accent-color: var(--accent); width: 15px; height: 15px; }
+        .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 0.2rem; }
+        .dot.green { background: var(--green); }
+        .dot.yellow { background: var(--yellow); }
+        .dot.red { background: #475569; }
+        .info-box { background: #0c1a3a; border: 1px solid #1d4ed8; border-radius: 0.4rem; padding: 0.75rem 1rem; font-size: 0.8rem; color: #93c5fd; margin-bottom: 1rem; }
+        .save-status { font-size: 0.8rem; margin-top: 0.75rem; padding: 0.5rem 0.75rem; border-radius: 0.375rem; }
+        .save-status.ok { background: #14532d; color: #4ade80; }
+        .save-status.err { background: #7f1d1d; color: #fca5a5; }
     </style>
 </head>
 <body>
 <div class="wizard" x-data="wizard()" x-init="init()">
-    <h1>Polymarket Bot Setup</h1>
-    <p class="subtitle">5 steps, ~10 minutes. Configure everything to start trading.</p>
+
+    <div class="top-bar">
+        <h1>Bot Setup</h1>
+        <a href="/">← Back to Dashboard</a>
+    </div>
+    <p class="subtitle">Configure once — settings persist between restarts. Only fill fields you want to update.</p>
 
     <!-- Progress -->
     <div class="steps">
@@ -52,24 +68,43 @@
     </div>
 
     <div class="card">
-        <!-- Step 1: Account -->
+
+        <!-- Step 1: Account / API Keys -->
         <div x-show="step === 1">
-            <h2>Step 1: Account Setup</h2>
-            <div class="form-group">
-                <label>Polymarket API Key</label>
-                <input type="password" x-model="config.api_key" placeholder="Your API key">
+            <h2>Step 1: API Credentials</h2>
+            <div class="info-box" x-show="existing.has_polymarket_key">
+                ✓ Polymarket API keys are already configured. Leave fields blank to keep existing values.
             </div>
             <div class="form-group">
-                <label>Wallet Address</label>
-                <input type="text" x-model="config.wallet" placeholder="0x...">
+                <label>
+                    Polymarket API Key
+                    <span class="configured-badge" x-show="existing.has_polymarket_key">✓ configured</span>
+                </label>
+                <input type="password" x-model="config.api_key" :placeholder="existing.has_polymarket_key ? '(keep existing — leave blank)' : 'Your API key'">
+            </div>
+            <div class="form-group">
+                <label>Polymarket Secret</label>
+                <input type="password" x-model="config.api_secret" :placeholder="existing.has_polymarket_key ? '(keep existing)' : 'Your secret'">
+            </div>
+            <div class="form-group">
+                <label>Private Key (for signing orders)</label>
+                <input type="password" x-model="config.private_key" :placeholder="existing.has_polymarket_key ? '(keep existing)' : '0x...'">
+                <p class="help">Your wallet private key. Only used locally to sign order transactions.</p>
+            </div>
+            <div class="form-group">
+                <label>
+                    Wallet Address
+                    <span class="configured-badge" x-show="existing.wallet_address_masked">✓ <span x-text="existing.wallet_address_masked"></span></span>
+                </label>
+                <input type="text" x-model="config.wallet" :placeholder="existing.wallet_address_masked ? '(keep existing)' : '0x...'">
             </div>
             <div class="form-group">
                 <label>Trading Mode</label>
                 <select x-model="config.mode">
-                    <option value="paper">Paper Trading (Recommended)</option>
+                    <option value="paper">Paper Trading (Recommended to start)</option>
                     <option value="real">Real Trading</option>
                 </select>
-                <p class="help">Start with paper mode to validate your strategy before risking real capital.</p>
+                <p class="help">Paper mode simulates trades with no real money. You can toggle this from the dashboard anytime.</p>
             </div>
         </div>
 
@@ -78,34 +113,39 @@
             <h2>Step 2: Capital & Risk</h2>
             <div class="form-group" x-show="config.mode === 'paper'">
                 <label>Paper Trading Balance ($)</label>
-                <input type="number" min="100" max="1000000" step="100" x-model.number="config.paper_balance" placeholder="10000">
-                <p class="help">Simulated starting capital for paper mode. Default: $10,000.</p>
+                <input type="number" min="100" max="1000000" step="100" x-model.number="config.paper_balance">
+                <p class="help">Starting capital for simulation. You can also change this from the main dashboard without going through Setup.</p>
             </div>
             <div class="form-group">
                 <label>Position Size: <strong x-text="config.position_pct + '%'"></strong></label>
-                <input type="range" min="1" max="10" step="0.5" x-model.number="config.position_pct">
-                <div class="range-label"><span>1% (Conservative)</span><span>10% (Aggressive)</span></div>
-                <p class="help">Default: 5%. Percentage of capital per trade.</p>
+                <div class="range-row">
+                    <input type="range" min="1" max="10" step="0.5" x-model.number="config.position_pct">
+                    <span class="range-val" x-text="config.position_pct + '%'"></span>
+                </div>
+                <div class="range-labels"><span>1% Conservative</span><span>10% Aggressive</span></div>
             </div>
             <div class="form-group">
                 <label>Max Daily Loss: <strong x-text="config.max_daily_loss + '%'"></strong></label>
-                <input type="range" min="3" max="15" step="1" x-model.number="config.max_daily_loss">
-                <div class="range-label"><span>3%</span><span>15%</span></div>
-                <p class="help">Default: 8%. Circuit breaker stops trading at this loss level.</p>
+                <div class="range-row">
+                    <input type="range" min="3" max="15" step="1" x-model.number="config.max_daily_loss">
+                    <span class="range-val" x-text="config.max_daily_loss + '%'"></span>
+                </div>
+                <p class="help">Circuit breaker — bot stops trading if daily loss exceeds this.</p>
             </div>
             <div class="form-group">
                 <label>Trailing Stop: <strong x-text="config.trailing_pct + '%'"></strong></label>
-                <input type="range" min="2" max="10" step="0.5" x-model.number="config.trailing_pct">
-                <div class="range-label"><span>2% (Tight)</span><span>10% (Loose)</span></div>
-                <p class="help">Default: 5%.</p>
+                <div class="range-row">
+                    <input type="range" min="2" max="10" step="0.5" x-model.number="config.trailing_pct">
+                    <span class="range-val" x-text="config.trailing_pct + '%'"></span>
+                </div>
             </div>
         </div>
 
-        <!-- Step 3: Markets & Strategies -->
+        <!-- Step 3: Strategies -->
         <div x-show="step === 3">
-            <h2>Step 3: Markets & Strategies</h2>
+            <h2>Step 3: Strategies</h2>
             <div class="form-group">
-                <label>Market Categories</label>
+                <label>Market Categories to Trade</label>
                 <div class="checkbox-group">
                     <label class="checkbox-item"><input type="checkbox" x-model="config.categories" value="politics"> Politics</label>
                     <label class="checkbox-item"><input type="checkbox" x-model="config.categories" value="crypto"> Crypto</label>
@@ -118,16 +158,31 @@
                 <div class="checkbox-group">
                     <label class="checkbox-item">
                         <input type="checkbox" x-model="config.strategies" value="mean_reversion">
-                        <span class="semaphore" :class="backtestStatus.mean_reversion || 'red'"></span>
+                        <span class="dot" :class="backtestStatus.mean_reversion || 'red'"></span>
                         Mean Reversion
                     </label>
                     <label class="checkbox-item">
                         <input type="checkbox" x-model="config.strategies" value="momentum">
-                        <span class="semaphore" :class="backtestStatus.momentum || 'red'"></span>
+                        <span class="dot" :class="backtestStatus.momentum || 'red'"></span>
                         Momentum
                     </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" x-model="config.strategies" value="news_surge">
+                        <span class="dot green"></span>
+                        News Surge
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" x-model="config.strategies" value="value_bet">
+                        <span class="dot green"></span>
+                        Value Bet
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" x-model="config.strategies" value="liquidity_squeeze">
+                        <span class="dot green"></span>
+                        Liquidity Squeeze
+                    </label>
                 </div>
-                <p class="help">Colored dots show backtesting status (green=passes, yellow=partial, red=fails).</p>
+                <p class="help">Dots: green = enabled, gray = no backtest data yet.</p>
             </div>
         </div>
 
@@ -135,50 +190,61 @@
         <div x-show="step === 4">
             <h2>Step 4: AI & News Feeds</h2>
             <div class="form-group">
-                <label>Groq API Key (Optional)</label>
-                <input type="password" x-model="config.groq_key" placeholder="gsk_...">
-                <p class="help">Free tier: 14,400 requests/day. Enhances sentiment analysis. Leave blank to use VADER only.</p>
+                <label>
+                    Groq API Key (optional but recommended)
+                    <span class="configured-badge" x-show="existing.has_groq_key">✓ configured</span>
+                </label>
+                <input type="password" x-model="config.groq_key" :placeholder="existing.has_groq_key ? '(keep existing — leave blank)' : 'gsk_...'">
+                <p class="help">Free tier at console.groq.com — 14,400 requests/day. Powers value_bet and news_surge strategies. Without it, bot uses VADER only.</p>
             </div>
             <div class="form-group">
                 <label>Active RSS Feeds</label>
                 <div class="checkbox-group">
-                    <label class="checkbox-item"><input type="checkbox" x-model="config.feeds" value="politics" checked> Politics (Reuters, Politico)</label>
-                    <label class="checkbox-item"><input type="checkbox" x-model="config.feeds" value="crypto" checked> Crypto (CoinDesk, CoinTelegraph)</label>
-                    <label class="checkbox-item"><input type="checkbox" x-model="config.feeds" value="general" checked> General News (BBC, Reuters)</label>
+                    <label class="checkbox-item"><input type="checkbox" x-model="config.feeds" value="politics"> Politics (Reuters, Politico)</label>
+                    <label class="checkbox-item"><input type="checkbox" x-model="config.feeds" value="crypto"> Crypto (CoinDesk)</label>
+                    <label class="checkbox-item"><input type="checkbox" x-model="config.feeds" value="general"> General (BBC, Reuters)</label>
                     <label class="checkbox-item"><input type="checkbox" x-model="config.feeds" value="sports"> Sports (ESPN)</label>
                 </div>
             </div>
         </div>
 
-        <!-- Step 5: Notifications -->
+        <!-- Step 5: Telegram -->
         <div x-show="step === 5">
-            <h2>Step 5: Notifications</h2>
+            <h2>Step 5: Telegram Notifications</h2>
+            <div class="info-box" x-show="existing.has_telegram">
+                ✓ Telegram is already configured. Leave blank to keep existing bot token.
+            </div>
             <div class="form-group">
-                <label>Telegram Bot Token</label>
-                <input type="password" x-model="config.telegram_token" placeholder="123456:ABC-DEF...">
-                <p class="help">Create a bot via @BotFather on Telegram to get this token.</p>
+                <label>
+                    Telegram Bot Token
+                    <span class="configured-badge" x-show="existing.has_telegram">✓ configured</span>
+                </label>
+                <input type="password" x-model="config.telegram_token" :placeholder="existing.has_telegram ? '(keep existing)' : '123456:ABC-DEF...'">
+                <p class="help">Create a bot via @BotFather on Telegram. Skip if you don't want notifications.</p>
             </div>
             <div class="form-group">
                 <label>Telegram Chat ID</label>
-                <input type="text" x-model="config.telegram_chat_id" placeholder="Your chat ID">
-                <p class="help">Send /start to your bot, then use @userinfobot to find your chat ID.</p>
+                <input type="text" x-model="config.telegram_chat_id" :placeholder="existing.telegram_chat_id || 'Your numeric chat ID'">
+                <p class="help">Send /start to your bot, then use @userinfobot to get your ID.</p>
             </div>
             <div class="form-group">
                 <label>Alert Levels</label>
                 <div class="checkbox-group">
-                    <label class="checkbox-item"><input type="checkbox" x-model="config.alert_levels" value="critical" checked disabled> Critical (Always)</label>
+                    <label class="checkbox-item"><input type="checkbox" x-model="config.alert_levels" value="critical" disabled checked> Critical (always)</label>
                     <label class="checkbox-item"><input type="checkbox" x-model="config.alert_levels" value="important" checked> Important</label>
-                    <label class="checkbox-item"><input type="checkbox" x-model="config.alert_levels" value="info"> Info (Hourly Summary)</label>
+                    <label class="checkbox-item"><input type="checkbox" x-model="config.alert_levels" value="info"> Info (hourly summary)</label>
                 </div>
             </div>
+            <div class="save-status ok" x-show="saveOk">✓ Settings saved successfully. Redirecting...</div>
+            <div class="save-status err" x-show="saveErr" x-text="saveErr"></div>
         </div>
 
         <!-- Navigation -->
         <div class="btns">
-            <button class="btn btn-secondary" x-show="step > 1" @click="step--">Previous</button>
+            <button class="btn btn-secondary" x-show="step > 1" @click="step--">← Previous</button>
             <div x-show="step === 1"></div>
-            <button class="btn btn-primary" x-show="step < 5" @click="step++">Next</button>
-            <button class="btn btn-success" x-show="step === 5" @click="finish()">Complete Setup</button>
+            <button class="btn btn-primary" x-show="step < 5" @click="step++">Next →</button>
+            <button class="btn btn-success" x-show="step === 5" @click="finish()" :disabled="saving" x-text="saving ? 'Saving...' : 'Save & Finish'"></button>
         </div>
     </div>
 </div>
@@ -187,30 +253,53 @@
 function wizard() {
     return {
         step: 1,
+        saving: false,
+        saveOk: false,
+        saveErr: '',
+        existing: {},
         config: {
-            api_key: '', wallet: '', mode: 'paper',
+            api_key: '', api_secret: '', private_key: '', wallet: '',
+            mode: 'paper',
             paper_balance: 10000,
             position_pct: 5, max_daily_loss: 8, trailing_pct: 5,
             categories: ['politics', 'crypto', 'other'],
-            strategies: ['mean_reversion', 'momentum'],
+            strategies: ['mean_reversion', 'momentum', 'news_surge', 'value_bet'],
             groq_key: '', feeds: ['politics', 'crypto', 'general'],
             telegram_token: '', telegram_chat_id: '',
-            alert_levels: ['critical', 'important']
+            alert_levels: ['critical', 'important'],
         },
         backtestStatus: { mean_reversion: 'red', momentum: 'red' },
 
         async init() {
             const token = localStorage.getItem('jwt_token');
-            if (token) {
-                for (const s of ['mean_reversion', 'momentum']) {
-                    try {
-                        const r = await fetch('/api/backtest/' + s, { headers: { 'Authorization': 'Bearer ' + token } });
-                        if (r.ok) {
-                            const d = await r.json();
-                            this.backtestStatus[s] = (d.semaphore || 'RED').toLowerCase();
-                        }
-                    } catch(e) {}
+            if (!token) return;
+
+            const headers = { 'Authorization': 'Bearer ' + token };
+
+            // Load existing settings to pre-populate
+            try {
+                const res = await fetch('/api/settings', { headers });
+                if (res.ok) {
+                    this.existing = await res.json();
+                    // Apply existing values to form
+                    if (this.existing.paper_initial_balance) this.config.paper_balance = this.existing.paper_initial_balance;
+                    if (this.existing.default_position_pct) this.config.position_pct = this.existing.default_position_pct;
+                    if (this.existing.max_daily_loss_pct) this.config.max_daily_loss = this.existing.max_daily_loss_pct;
+                    if (this.existing.trailing_pct) this.config.trailing_pct = this.existing.trailing_pct;
+                    if (this.existing.telegram_chat_id) this.config.telegram_chat_id = this.existing.telegram_chat_id;
+                    this.config.mode = this.existing.paper_mode ? 'paper' : 'real';
                 }
+            } catch(e) {}
+
+            // Check backtest status
+            for (const s of ['mean_reversion', 'momentum']) {
+                try {
+                    const r = await fetch('/api/backtest/' + s, { headers });
+                    if (r.ok) {
+                        const d = await r.json();
+                        this.backtestStatus[s] = (d.semaphore || 'RED').toLowerCase();
+                    }
+                } catch(e) {}
             }
         },
 
@@ -219,19 +308,44 @@ function wizard() {
             if (!token) { alert('Please login first'); window.location = '/'; return; }
             const headers = { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
 
-            const updates = [
-                { key: 'default_position_pct', value: this.config.position_pct },
-                { key: 'trailing_pct', value: this.config.trailing_pct },
-                { key: 'paper_mode', value: this.config.mode === 'paper' },
-                { key: 'paper_initial_balance', value: this.config.paper_balance },
-            ];
+            this.saving = true;
+            this.saveErr = '';
 
-            for (const u of updates) {
-                await fetch('/api/config', { method: 'POST', headers, body: JSON.stringify(u) });
+            try {
+                // 1. Save credentials (only non-empty values are updated)
+                const credRes = await fetch('/api/settings/credentials', {
+                    method: 'POST', headers,
+                    body: JSON.stringify({
+                        polymarket_api_key: this.config.api_key,
+                        polymarket_secret: this.config.api_secret,
+                        polymarket_private_key: this.config.private_key,
+                        wallet_address: this.config.wallet,
+                        groq_api_key: this.config.groq_key,
+                        telegram_bot_token: this.config.telegram_token,
+                        telegram_chat_id: this.config.telegram_chat_id,
+                    })
+                });
+                if (!credRes.ok) throw new Error('Failed to save credentials');
+
+                // 2. Save numeric/mode settings
+                const updates = [
+                    { key: 'default_position_pct', value: this.config.position_pct },
+                    { key: 'trailing_pct', value: this.config.trailing_pct },
+                    { key: 'paper_mode', value: this.config.mode === 'paper' },
+                    { key: 'paper_initial_balance', value: this.config.paper_balance },
+                    { key: 'max_daily_loss_pct', value: this.config.max_daily_loss },
+                ];
+                for (const u of updates) {
+                    await fetch('/api/config', { method: 'POST', headers, body: JSON.stringify(u) });
+                }
+
+                this.saveOk = true;
+                setTimeout(() => window.location = '/', 1800);
+            } catch(e) {
+                this.saveErr = 'Error: ' + (e.message || 'Could not save settings');
+            } finally {
+                this.saving = false;
             }
-
-            alert('Setup complete! Redirecting to dashboard...');
-            window.location = '/';
         }
     };
 }
