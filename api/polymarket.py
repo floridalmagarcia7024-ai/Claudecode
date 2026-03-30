@@ -141,11 +141,17 @@ class PolymarketClient:
                 )
             except Exception as exc:
                 last_exc = exc
+                
+                # ¡Esta es la condición clave para abortar rápido y no perder 40 segundos!
+                error_str = str(exc)
+                if "No orderbook exists" in error_str or "404" in error_str:
+                    raise exc
+
                 logger.warning(
                     "api_error",
                     attempt=attempt + 1,
                     func=func.__name__,
-                    error=str(exc),
+                    error=error_str,
                 )
 
             if attempt < len(delays):
