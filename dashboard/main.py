@@ -1,4 +1,3 @@
-```python
 """Dashboard FastAPI app with JWT auth, rate limiting, and CORS (Module 17).
 
 Phase 5 additions: log ring buffer, /api/logs, /api/logs/stream,
@@ -31,7 +30,7 @@ from config import settings
 
 logger = structlog.get_logger(__name__)
 
-# ── Log Ring Buffer ────────────────────────────────────────────
+# ── Log Ring Buffer ─────────────────────────────────────────────
 _log_buffer: deque = deque(maxlen=500)
 
 
@@ -44,18 +43,14 @@ def capture_log(entry: dict) -> None:
     })
 
 
-# ── JWT config ─────────────────────────────────────────────────
+# ── JWT config ─────────────────────────────────────────────
 JWT_SECRET = os.environ.get("JWT_SECRET", secrets.token_urlsafe(32))
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 
-# Rate limiter
 limiter = Limiter(key_func=get_remote_address)
-
-# Security
 security = HTTPBearer(auto_error=False)
 
-# Templates
 templates_dir = os.path.join(os.path.dirname(__file__), "templates")
 templates = Jinja2Templates(directory=templates_dir)
 
@@ -104,7 +99,7 @@ def create_dashboard_app() -> FastAPI:
 
 dashboard_app = create_dashboard_app()
 
-# ── Shared state (set by main.py during startup) ────────────────
+# ── Shared state ───────────────────────────────────────────────
 
 _engine = None
 _state = None
@@ -176,7 +171,7 @@ class CredentialsUpdate(BaseModel):
     telegram_chat_id: str = ""
 
 
-# ── JWT Auth ──────────────────────────────────────────────────
+# ── JWT Auth ──────────────────────────────────────────────
 
 
 def create_jwt_token(subject: str) -> str:
@@ -205,7 +200,7 @@ async def get_current_user(
     return verify_jwt_token(credentials.credentials)
 
 
-# ── Auth ──────────────────────────────────────────────────────
+# ── Auth ──────────────────────────────────────────────────
 
 
 @dashboard_app.post("/api/auth/login")
@@ -274,7 +269,7 @@ async def api_mode_toggle(request: Request, user: dict = Depends(get_current_use
     return {"paper_mode": settings.paper_mode, "mode": mode}
 
 
-# ── Positions & Trades ────────────────────────────────────────
+# ── Positions & Trades ───────────────────────────────────────────
 
 
 @dashboard_app.get("/api/positions")
@@ -363,7 +358,7 @@ async def api_trades(
     return result
 
 
-# ── Metrics & Calibration ─────────────────────────────────────
+# ── Metrics & Calibration ────────────────────────────────────────
 
 
 @dashboard_app.get("/api/metrics")
@@ -423,7 +418,7 @@ async def api_calibration(request: Request, user: dict = Depends(get_current_use
     }
 
 
-# ── Config & Settings ─────────────────────────────────────────
+# ── Config & Settings ───────────────────────────────────────────
 
 
 @dashboard_app.post("/api/config")
@@ -465,7 +460,6 @@ async def api_get_settings(request: Request, user: dict = Depends(get_current_us
         "trailing_pct": settings.trailing_pct,
         "zscore_threshold": settings.zscore_threshold,
         "scan_interval_seconds": settings.scan_interval_seconds,
-        # Credentials: show masked or empty
         "has_polymarket_key": bool(settings.polymarket_api_key),
         "has_groq_key": bool(settings.groq_api_key),
         "has_telegram": bool(settings.telegram_bot_token),
@@ -479,12 +473,9 @@ async def api_get_settings(request: Request, user: dict = Depends(get_current_us
 async def api_save_credentials(
     request: Request, body: CredentialsUpdate, user: dict = Depends(get_current_user)
 ):
-    """Persist API credentials to .env file and apply to current session.
-    Only non-empty fields are updated — existing values are preserved.
-    """
+    """Persist API credentials to .env file and apply to current session."""
     env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
 
-    # Read existing .env
     existing: dict[str, str] = {}
     if os.path.exists(env_path):
         with open(env_path) as f:
@@ -494,7 +485,6 @@ async def api_save_credentials(
                     k, _, v = line.partition("=")
                     existing[k.strip()] = v.strip()
 
-    # Map of env key → (new value, settings attribute)
     updates = {
         "POLYMARKET_API_KEY": (body.polymarket_api_key, "polymarket_api_key"),
         "POLYMARKET_SECRET": (body.polymarket_secret, "polymarket_secret"),
@@ -507,12 +497,11 @@ async def api_save_credentials(
 
     changed = []
     for env_key, (new_val, attr) in updates.items():
-        if new_val:  # Only update if user provided a value
+        if new_val:
             existing[env_key] = new_val
             setattr(settings, attr, new_val)
             changed.append(env_key)
 
-    # Write updated .env
     try:
         lines = [f"{k}={v}" for k, v in existing.items()]
         with open(env_path, "w") as f:
@@ -574,7 +563,7 @@ async def api_logs_stream(
     )
 
 
-# ── Backtest & Regime ─────────────────────────────────────────
+# ── Backtest & Regime ───────────────────────────────────────────
 
 
 @dashboard_app.get("/api/backtest/{strategy}")
@@ -588,7 +577,6 @@ async def api_backtest(
     if result:
         return result.to_dict()
     if _collector:
-        from api.data_collector import DataCollector
         try:
             cursor = await _collector.db.execute(
                 "SELECT DISTINCT market_id FROM market_snapshots LIMIT 1"
@@ -632,7 +620,7 @@ async def api_export_trades(
     )
 
 
-# ── Phase 4 Endpoints ─────────────────────────────────────────
+# ── Phase 4 Endpoints ───────────────────────────────────────────
 
 
 @dashboard_app.post("/api/optimizer/approve")
@@ -761,4 +749,3 @@ async def dashboard_calibration(request: Request):
 @dashboard_app.get("/onboarding", response_class=HTMLResponse)
 async def dashboard_onboarding(request: Request):
     return templates.TemplateResponse(request, "onboarding.html")
-
