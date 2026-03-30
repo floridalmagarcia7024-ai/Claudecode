@@ -170,10 +170,12 @@ class PolymarketClient:
             raw = await self._call_with_retry(self._client.get_markets, next_cursor="")
             markets: list[MarketData] = []
             data = raw if isinstance(raw, list) else raw.get("data", [])
+
+            # ---> INICIO DEL FILTRO DE VOLUMEN Y MERCADOS CERRADOS <---
+            # 1. Descartamos instantáneamente los mercados que ya están cerrados o inactivos
+            data = [m for m in data if m.get("active", True) and not m.get("closed", False)]
             
-            # ---> INICIO DEL FILTRO DE VOLUMEN (CORREGIDO) <---
-            # Simplemente ordenamos de mayor a menor para que el bot tome el Top 100
-            # Si "volume_num_24hr" no existe, usamos "volume" o 0.0 para que no falle
+            # 2. Ordenamos de mayor a menor volumen para tomar el Top 100
             data.sort(key=lambda x: float(x.get("volume_num_24hr", x.get("volume", 0.0))), reverse=True)
             # ---> FIN DEL FILTRO <---
 
@@ -210,7 +212,7 @@ class PolymarketClient:
         except Exception as exc:
             logger.error("get_markets_failed", error=str(exc))
             return []
-
+            
     async def get_orderbook(self, token_id: str) -> OrderBook:
         """Fetch order book for a specific token."""
         try:
