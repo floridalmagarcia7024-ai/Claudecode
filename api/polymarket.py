@@ -208,14 +208,11 @@ class PolymarketClient:
                     item.get("question", ""), item.get("category", "")
                 )
 
-                # ---> INICIO DEL FIX DE IDs <---
-                # Extraemos el ID del mercado buscando "condition_id" o "id"
+                # ---> FIX DE IDs APLICADO AQUÍ <---
                 market_id = item.get("condition_id", item.get("id", ""))
                 
-                # Ignoramos mercados rotos que no tienen ID
                 if not market_id:
                     continue
-                # ---> FIN DEL FIX <---
 
                 markets.append(
                     MarketData(
