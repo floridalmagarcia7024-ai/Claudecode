@@ -164,17 +164,17 @@ class PolymarketClient:
 
     # ── Public Methods ────────────────────────────────────────
 
-    async def get_active_markets(self, limit: int = 100) -> list[MarketData]:
+        async def get_active_markets(self, limit: int = 1000) -> list[MarketData]:
         """Fetch active markets from Polymarket using Gamma API."""
         try:
             import aiohttp
             
-            # Hacemos una llamada directa a la API pidiendo 500 mercados vivos
+            # 1. Ampliamos el radar: pedimos los 1000 mercados más activos a la API
             url = "https://gamma-api.polymarket.com/markets"
             params = {
                 "active": "true",
                 "closed": "false",
-                "limit": "500"  
+                "limit": "1000"  
             }
             
             async with aiohttp.ClientSession() as session:
@@ -188,13 +188,14 @@ class PolymarketClient:
             markets: list[MarketData] = []
             data = raw if isinstance(raw, list) else raw.get("data", [])
 
-            # 1. Filtro extra por seguridad para eliminar cualquier rezagado
+            # Filtro extra por seguridad para eliminar cualquier rezagado
             data = [m for m in data if m.get("active", True) and not m.get("closed", False)]
             
-            # 2. Ordenamos por volumen real para quedarnos con el verdadero Top 100
+            # Ordenamos por volumen real
             data.sort(key=lambda x: float(x.get("volume_num_24hr", x.get("volume", 0.0))), reverse=True)
 
-            for item in data[:limit]:
+            # 2. PROCESAMOS TODOS LOS MERCADOS (Eliminamos el recorte que lo limitaba a 100)
+            for item in data:
                 tokens = item.get("tokens", [])
                 token_ids = [t.get("token_id", "") for t in tokens]
                 outcomes = [t.get("outcome", "") for t in tokens]
@@ -208,7 +209,7 @@ class PolymarketClient:
                     item.get("question", ""), item.get("category", "")
                 )
 
-                # ---> FIX DE IDs APLICADO AQUÍ <---
+                # Extraemos el ID de forma segura
                 market_id = item.get("condition_id", item.get("id", ""))
                 
                 if not market_id:
@@ -233,6 +234,7 @@ class PolymarketClient:
         except Exception as exc:
             logger.error("get_markets_failed", error=str(exc))
             return []
+
             
     async def get_orderbook(self, token_id: str) -> OrderBook:
         """Fetch order book for a specific token."""
