@@ -234,7 +234,6 @@ class PolymarketClient:
         except Exception as exc:
             logger.error("get_markets_failed", error=str(exc))
             return []
-
             
     async def get_orderbook(self, token_id: str) -> OrderBook:
         """Fetch order book for a specific token."""
