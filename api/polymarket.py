@@ -163,7 +163,8 @@ class PolymarketClient:
         raise last_exc  # type: ignore[misc]
 
     # ── Public Methods ────────────────────────────────────────
-async def get_active_markets(self, limit: int = 1000) -> list[MarketData]:
+
+    async def get_active_markets(self, limit: int = 1000) -> list[MarketData]:
         """Fetch active markets from Polymarket using Gamma API."""
         try:
             import aiohttp
